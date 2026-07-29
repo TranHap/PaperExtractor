@@ -111,7 +111,7 @@ export function FigureValuesStep() {
         headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             task: "figure_extract",
-            figure: selectedFigure,
+             figure: selectedFigure,
             fields: allFields.map((f) => ({
               name: f.name,
               type: f.type,
@@ -131,11 +131,13 @@ export function FigureValuesStep() {
       if (!res.ok) throw new Error(data.error || "Trích xuất thất bại");
 
       const extractedValues = data.values as FieldValue[];
+      const digitizationColumns = [xField, yField, seriesField]
+        .filter((n): n is string => typeof n === "string" && n.trim().length > 0);
       const newFigureContext = {
         values: extractedValues,
         curveLabels: data.curveLabels ?? [],
         changingVariable: data.changingVariable,
-        changingFieldNames: data.changingFieldNames ?? [],
+        changingFieldNames: digitizationColumns,
         notes: data.notes,
       };
       if (currentFigureId) {

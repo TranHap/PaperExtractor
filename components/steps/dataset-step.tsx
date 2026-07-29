@@ -74,16 +74,10 @@ export function DatasetStep() {
   }
 
   function exportCsv() {
-    const headers = [
-      ...merged.map((m) => m.name),
-      seriesField || "series",
-      xField || "x",
-      yField || "y",
-    ];
+    const headers = merged.map((m) => m.name);
 
     const rows = points.map((p) => {
-      const vals = merged.map((m) => m.value);
-      return [...vals, p.series, p.x, p.y];
+      return merged.map((m) => m.value);
     });
 
     const paperShort = paper?.title
