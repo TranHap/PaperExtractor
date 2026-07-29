@@ -1,8 +1,9 @@
-﻿import { generateObject } from "ai";
+﻿import { streamText, Output } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import { getTextForTask } from "@/lib/paper-sections";
 
+export const runtime = 'edge';
 export const maxDuration = 60;
 
 const openaiProvider = createOpenAI();
@@ -22,35 +23,31 @@ const openaiProvider = createOpenAI();
 // DeepSeek.
 const MODEL = openaiProvider.chat("gpt-4.1-mini");
 
-async function retryGenerateObject(
-  args: Parameters<typeof generateObject>[0],
+async function retryStreamObject(
+  args: any,
   retries = 2,
 ): Promise<{ object: unknown }> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const result = await generateObject({
-        maxOutputTokens: 24000, // gpt-4.1-nano: tối đa 32768 completion tokens
+      const result = streamText({
         ...args,
         model: MODEL,
-      } as Parameters<typeof generateObject>[0]);
+      });
 
-      // OpenAI tự động áp dụng prompt caching cho các prompt dài (không cần
-      // cấu hình thêm) và trả thông tin cache qua usage.promptTokensDetails
-      // .cachedTokens (nếu SDK hỗ trợ). Log lại để tiện kiểm tra.
-      const usage = (result as any).usage;
-      const cachedTokens = usage?.promptTokensDetails?.cachedTokens;
+      const object = await result.output;
+      const usage = await result.usage;
+      const cachedTokens = usage?.inputTokenDetails?.cacheReadTokens;
       if (typeof cachedTokens === "number") {
         console.log("[openai cache]", {
           cachedTokens,
-          promptTokens: usage?.promptTokens,
+          promptTokens: usage?.inputTokens,
         });
       }
 
-      return { object: (result as { object: unknown }).object };
+      return { object: object as unknown };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      // Nếu do hết token, tăng thêm cho lần retry kế tiếp
       if (attempt < retries) {
         await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       }
@@ -87,39 +84,41 @@ export async function POST(req: Request) {
       const { paperText } = body as { paperText: string };
 
       try {
-        const { object } = await retryGenerateObject({
+        const { object } = await retryStreamObject({
           model: MODEL,
           maxOutputTokens: 30000, // gpt-4.1-nano: tối đa 32768 completion tokens
-          schema: z.object({
-            materials: z.array(
-              z.object({
-                name: z
-                  .string()
-                  .describe(
-                    "Exact material name as referred to in the paper, e.g. 'Cu-rGO LDH', 'Mn-rGO LDH', 'rGO', 'Fe3O4'",
-                  ),
-                role: z
-                  .string()
-                  .describe(
-                    "Role of this material in the study, e.g. 'catalyst', 'precursor', 'support', 'benchmark catalyst', or empty string",
-                  ),
-                values: z
-                  .array(fieldValueSchema)
-                  .describe(
-                    "EVERY numeric or qualitative characteristic reported for this specific material anywhere in the paper: BET surface area, pore volume, pHpzc, XRD 2Theta / d-spacing, particle/crystallite size, elemental composition (Cu/Mg/Al/C %), degradation rate constant, etc. Do not limit yourself to a fixed list — extract everything found and give each its own entry with a clear 'name'.",
-                  ),
-              }),
-            ),
-            generalConstants: z
-              .array(fieldValueSchema)
-              .describe(
-                "Paper-wide default/fixed experimental conditions NOT tied to one specific material — e.g. default reaction temperature, default pollutant concentration, default oxidant dosage, HPLC wavelength, column type, flow rate — ONLY if explicitly stated as a general/shared condition (e.g. in Materials & Methods or a figure caption that says 'unless otherwise noted').",
+          output: Output.object({
+            schema: z.object({
+              materials: z.array(
+                z.object({
+                  name: z
+                    .string()
+                    .describe(
+                      "Exact material name as referred to in the paper, e.g. 'Cu-rGO LDH', 'Mn-rGO LDH', 'rGO', 'Fe3O4'",
+                    ),
+                  role: z
+                    .string()
+                    .describe(
+                      "Role of this material in the study, e.g. 'catalyst', 'precursor', 'support', 'benchmark catalyst', or empty string",
+                    ),
+                  values: z
+                    .array(fieldValueSchema)
+                    .describe(
+                      "EVERY numeric or qualitative characteristic reported for this specific material anywhere in the paper: BET surface area, pore volume, pHpzc, XRD 2Theta / d-spacing, particle/crystallite size, elemental composition (Cu/Mg/Al/C %), degradation rate constant, etc. Do not limit yourself to a fixed list — extract everything found and give each its own entry with a clear 'name'.",
+                    ),
+                }),
               ),
-            notes: z
-              .string()
-              .describe(
-                "Short summary of coverage / anything ambiguous, or empty string",
-              ),
+              generalConstants: z
+                .array(fieldValueSchema)
+                .describe(
+                  "Paper-wide default/fixed experimental conditions NOT tied to one specific material — e.g. default reaction temperature, default pollutant concentration, default oxidant dosage, HPLC wavelength, column type, flow rate — ONLY if explicitly stated as a general/shared condition (e.g. in Materials & Methods or a figure caption that says 'unless otherwise noted').",
+                ),
+              notes: z
+                .string()
+                .describe(
+                  "Short summary of coverage / anything ambiguous, or empty string",
+                ),
+            }),
           }),
           prompt: [
             "You are building a COMPLETE reference table of materials and quantitative characteristics mentioned ANYWHERE in this scientific paper.",
@@ -162,36 +161,38 @@ export async function POST(req: Request) {
       const { paperText } = body as { paperText: string };
 
       try {
-        const { object } = await retryGenerateObject({
+        const { object } = await retryStreamObject({
           model: MODEL,
-          schema: z.object({
-            figures: z.array(
-              z.object({
-                label: z.string().describe("e.g. 'Figure 1', 'Fig. 2a'"),
-                caption: z
-                  .string()
-                  .describe(
-                    "The figure caption if available, else empty string",
-                  ),
-                description: z
-                  .string()
-                  .describe("What the figure shows / plots"),
-                xAxis: z
-                  .string()
-                  .describe("X-axis quantity and unit, or empty string"),
-                yAxis: z
-                  .string()
-                  .describe("Y-axis quantity and unit, or empty string"),
-                sweepVariable: z
-                  .string()
-                  .describe(
-                    "The parameter that differs between curveLabels / curves in this figure (i.e. what's swept between series), or empty string. Do NOT put xAxis or yAxis here — this is specifically the between-curve variable.",
-                  ),
-                curveLabels: z
-                  .array(z.string())
-                  .describe("Labels of the curves/series shown"),
-              }),
-            ),
+          output: Output.object({
+            schema: z.object({
+              figures: z.array(
+                z.object({
+                  label: z.string().describe("e.g. 'Figure 1', 'Fig. 2a'"),
+                  caption: z
+                    .string()
+                    .describe(
+                      "The figure caption if available, else empty string",
+                    ),
+                  description: z
+                    .string()
+                    .describe("What the figure shows / plots"),
+                  xAxis: z
+                    .string()
+                    .describe("X-axis quantity and unit, or empty string"),
+                  yAxis: z
+                    .string()
+                    .describe("Y-axis quantity and unit, or empty string"),
+                  sweepVariable: z
+                    .string()
+                    .describe(
+                      "The parameter that differs between curveLabels / curves in this figure (i.e. what's swept between series), or empty string. Do NOT put xAxis or yAxis here — this is specifically the between-curve variable.",
+                    ),
+                  curveLabels: z
+                    .array(z.string())
+                    .describe("Labels of the curves/series shown"),
+                }),
+              ),
+            }),
           }),
           prompt: [
             "Build a complete inventory of the FIGURES in this scientific paper.",
@@ -297,20 +298,22 @@ export async function POST(req: Request) {
       const knownCurveLabels = figure?.curveLabels ?? [];
 
       try {
-        const { object } = await retryGenerateObject({
+        const { object } = await retryStreamObject({
           model: MODEL,
-          schema: z.object({
-            values: z.array(fieldValueSchema),
-            changingFieldNames: z
-              .array(z.string())
-              .describe(
-                "Exact 'name' values (must match a name in 'Fields' exactly) that you classified per rule 1-2 as matching this figure's changingVariable or curveLabels, and therefore left empty in 'values'.",
-              ),
-            notes: z
-              .string()
-              .describe(
-                "Short rationale explaining how the fixed-variable values were determined for this figure, or empty string",
-              ),
+          output: Output.object({
+            schema: z.object({
+              values: z.array(fieldValueSchema),
+              changingFieldNames: z
+                .array(z.string())
+                .describe(
+                  "Exact 'name' values (must match a name in 'Fields' exactly) that you classified per rule 1-2 as matching this figure's changingVariable or curveLabels, and therefore left empty in 'values'.",
+                ),
+              notes: z
+                .string()
+                .describe(
+                  "Short rationale explaining how the fixed-variable values were determined for this figure, or empty string",
+                ),
+            }),
           }),
           prompt: [
             "You are extracting values for the FIXED VARIABLES of ONE SPECIFIC figure in a scientific paper.",

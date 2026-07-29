@@ -126,6 +126,11 @@ export function FigureValuesStep() {
             materialsContext: paperCharacteristics,
           }),
       });
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        throw new Error(`Server returned non-JSON response (status ${res.status}). This usually means the request timed out on the server. Please try again with a shorter paper, or contact support if the problem persists.`);
+      }
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.error || "Trích xuất thất bại");
