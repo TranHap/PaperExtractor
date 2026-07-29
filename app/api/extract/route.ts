@@ -33,7 +33,7 @@ const MODEL = openaiProvider.chat("gpt-4.1-mini");
 // against an internal budget comfortably under 40s. If we're about to run out,
 // we abort the in-flight request and return a clean JSON error ourselves —
 // so the client ALWAYS gets JSON back, never a bare infra-level 504 page.
-const NETLIFY_EDGE_BUDGET_MS = 33_000;
+const NETLIFY_EDGE_BUDGET_MS = 26_000;
 
 class DeadlineExceededError extends Error {
   constructor(
@@ -353,7 +353,7 @@ export async function POST(req: Request) {
 
       const CHUNK_SIZE = 9000;
       const CHUNK_OVERLAP = 500;
-      const MAX_CONCURRENT_CHUNKS = 8;
+      const MAX_CONCURRENT_CHUNKS = 16;
       // Generous cap just so a pathological input can't create an unbounded
       // number of chunks — this is much higher than the old hard 15000-char
       // clip, so in practice the WHOLE paper gets scanned now, not just the
