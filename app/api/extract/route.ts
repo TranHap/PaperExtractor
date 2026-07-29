@@ -47,9 +47,8 @@ class DeadlineExceededError extends Error {
 async function retryStreamObject(
   args: any,
   retries = 2,
-  budgetMs = NETLIFY_EDGE_BUDGET_MS,
+  deadline: number = Date.now() + NETLIFY_EDGE_BUDGET_MS,
 ): Promise<{ object: unknown }> {
-  const deadline = Date.now() + budgetMs;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -118,6 +117,138 @@ const fieldValueSchema = z.object({
 function clip(text: string, max = 90000) {
   if (text.length <= max) return text;
   return text.slice(0, max) + "\n\n[...truncated...]";
+}
+
+// --- Helpers for splitting the "figures" scan into smaller per-section calls ---
+//
+// Splitting a long paper into chunks and scanning each chunk separately (in
+// parallel) keeps every individual model call small on BOTH input and output,
+// so each one reliably finishes in a few seconds — instead of one giant call
+// that has to describe every figure/panel of an entire paper and can easily
+// run past Netlify's 40s Edge Function cutoff for papers with many figures.
+
+// Splits text into overlapping chunks, preferring to break at a paragraph or
+// sentence boundary near the target size so a figure caption isn't sliced
+// exactly in half between two chunks. The overlap means a caption that falls
+// right on a boundary still shows up whole in at least one chunk.
+function chunkText(text: string, chunkSize: number, overlap: number): string[] {
+  if (text.length <= chunkSize) return [text];
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + chunkSize, text.length);
+    if (end < text.length) {
+      const searchFrom = Math.max(start, end - 400);
+      const lookback = text.slice(searchFrom, end);
+      const lastBreak = Math.max(
+        lookback.lastIndexOf("\n\n"),
+        lookback.lastIndexOf(". "),
+      );
+      if (lastBreak > -1) {
+        end = searchFrom + lastBreak + 1;
+      }
+    }
+    chunks.push(text.slice(start, end));
+    if (end >= text.length) break;
+    start = Math.max(end - overlap, start + 1);
+  }
+  return chunks;
+}
+
+// Runs `fn` over `items` with at most `concurrency` calls in flight at once.
+// Network-bound calls like these don't cost meaningful CPU time while waiting
+// on a response, so running several in parallel is what actually keeps the
+// TOTAL wall-clock time low regardless of how many chunks a paper produces.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return results;
+}
+
+type RawFigure = {
+  label: string;
+  caption: string;
+  description: string;
+  xAxis: string;
+  yAxis: string;
+  sweepVariable: string;
+  curveLabels: string[];
+};
+
+function normalizeFigureLabel(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/fig(ure)?s?\.?/g, "figure")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+// Rough "how complete is this extraction" score, used to pick the better of
+// two duplicate sightings of the same figure across overlapping/adjacent
+// chunks (e.g. the intro mentions "Figure 3 shows X" while the results
+// section has the figure's real caption + axes).
+function scoreFigure(f: RawFigure): number {
+  return (
+    (f.caption?.trim().length ?? 0) +
+    (f.description?.trim().length ?? 0) +
+    (f.xAxis?.trim() ? 10 : 0) +
+    (f.yAxis?.trim() ? 10 : 0) +
+    (f.sweepVariable?.trim() ? 10 : 0) +
+    (f.curveLabels?.length ?? 0) * 5
+  );
+}
+
+function parseLabelForSort(label: string): { num: number; panel: string } {
+  const m = label.match(/(\d+)\s*([a-z]?)/i);
+  return m
+    ? { num: parseInt(m[1], 10), panel: (m[2] || "").toLowerCase() }
+    : { num: Number.MAX_SAFE_INTEGER, panel: label.toLowerCase() };
+}
+
+// Merges figures found across chunks: same figure mentioned in two
+// overlapping/nearby chunks gets collapsed into one entry (keeping whichever
+// version is more complete, and the union of curveLabels), then sorted back
+// into a natural reading order (Figure 2 before Figure 10, panels a < b < c).
+function mergeFigures(all: RawFigure[]): RawFigure[] {
+  const byKey = new Map<string, RawFigure>();
+  const order: string[] = [];
+  for (const f of all) {
+    if (!f?.label?.trim()) continue;
+    const key = normalizeFigureLabel(f.label);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, f);
+      order.push(key);
+      continue;
+    }
+    const merged =
+      scoreFigure(f) > scoreFigure(existing) ? { ...f } : { ...existing };
+    merged.curveLabels = Array.from(
+      new Set([...(existing.curveLabels ?? []), ...(f.curveLabels ?? [])]),
+    );
+    byKey.set(key, merged);
+  }
+  return order
+    .map((key) => byKey.get(key)!)
+    .sort((a, b) => {
+      const pa = parseLabelForSort(a.label);
+      const pb = parseLabelForSort(b.label);
+      return pa.num !== pb.num
+        ? pa.num - pb.num
+        : pa.panel.localeCompare(pb.panel);
+    });
 }
 
 export async function POST(req: Request) {
@@ -215,70 +346,96 @@ export async function POST(req: Request) {
     if (task === "figures") {
       const { paperText } = body as { paperText: string };
 
+      // One shared deadline for the WHOLE task — every chunk call below races
+      // against this same absolute time, so running them in parallel doesn't
+      // silently push the total wall-clock time past Netlify's 40s cutoff.
+      const taskDeadline = Date.now() + NETLIFY_EDGE_BUDGET_MS;
+
+      const CHUNK_SIZE = 9000;
+      const CHUNK_OVERLAP = 500;
+      const MAX_CONCURRENT_CHUNKS = 8;
+      // Generous cap just so a pathological input can't create an unbounded
+      // number of chunks — this is much higher than the old hard 15000-char
+      // clip, so in practice the WHOLE paper gets scanned now, not just the
+      // first ~15k characters of it.
+      const MAX_TOTAL_PAPER_CHARS = 200_000;
+
+      const figureSchema = z.object({
+        label: z.string().describe("e.g. 'Figure 1', 'Fig. 2a'"),
+        caption: z
+          .string()
+          .describe("The figure caption if available, else empty string"),
+        description: z.string().describe("What the figure shows / plots"),
+        xAxis: z.string().describe("X-axis quantity and unit, or empty string"),
+        yAxis: z.string().describe("Y-axis quantity and unit, or empty string"),
+        sweepVariable: z
+          .string()
+          .describe(
+            "The parameter that differs between curveLabels / curves in this figure (i.e. what's swept between series), or empty string. Do NOT put xAxis or yAxis here — this is specifically the between-curve variable.",
+          ),
+        curveLabels: z
+          .array(z.string())
+          .describe("Labels of the curves/series shown"),
+      });
+
+      const chunks = chunkText(
+        clip(paperText, MAX_TOTAL_PAPER_CHARS),
+        CHUNK_SIZE,
+        CHUNK_OVERLAP,
+      );
+
+      let chunkFailures = 0;
+
+      async function scanChunk(
+        text: string,
+        index: number,
+      ): Promise<RawFigure[]> {
+        try {
+          const { object } = await retryStreamObject(
+            {
+              model: MODEL,
+              maxOutputTokens: 8000,
+              output: Output.object({
+                schema: z.object({ figures: z.array(figureSchema) }),
+              }),
+              prompt: [
+                "Build an inventory of the FIGURES referenced in the excerpt below.",
+                "",
+                "IMPORTANT: this excerpt is only PART of a larger scientific paper — text may start/end mid-sentence, and some figures mentioned here may be described more fully in another part of the paper you can't see. That's expected and fine.",
+                "Only report a figure/panel if THIS excerpt actually contains a figure reference or caption for it (a label like 'Figure'/'Fig.' followed by a number). Do not invent figures that aren't mentioned here, and don't worry about figures that belong only to other parts of the paper.",
+                "When a figure has distinct labeled panels (a), (b), (c), (d), list each panel as a separate item (e.g. Figure 4a, Figure 4b) whenever this excerpt gives panel-specific information. Otherwise list the figure once.",
+                "For each figure/panel found, describe what it plots and identify axes and any curve/series labels, using ONLY information present in this excerpt.",
+                "If this excerpt contains no figure reference at all, return an empty 'figures' array — do not force an entry.",
+                "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
+                "",
+                `Excerpt ${index + 1} of ${chunks.length} (paper split into sections for processing):`,
+                text,
+              ].join("\n\n"),
+            },
+            1, // small call now — 1 retry is plenty
+            taskDeadline,
+          );
+          return (object as { figures: RawFigure[] }).figures ?? [];
+        } catch (err) {
+          // One slow/failed section shouldn't sink the whole scan — log it,
+          // skip it, and let the rest of the paper's figures still come back.
+          chunkFailures++;
+          console.error(`extract/figures chunk ${index} failed:`, err);
+          return [];
+        }
+      }
+
       try {
-        const { object } = await retryStreamObject({
-          model: MODEL,
-          maxOutputTokens: 16000,
-          output: Output.object({
-            schema: z.object({
-              figures: z.array(
-                z.object({
-                  label: z.string().describe("e.g. 'Figure 1', 'Fig. 2a'"),
-                  caption: z
-                    .string()
-                    .describe(
-                      "The figure caption if available, else empty string",
-                    ),
-                  description: z
-                    .string()
-                    .describe("What the figure shows / plots"),
-                  xAxis: z
-                    .string()
-                    .describe("X-axis quantity and unit, or empty string"),
-                  yAxis: z
-                    .string()
-                    .describe("Y-axis quantity and unit, or empty string"),
-                  sweepVariable: z
-                    .string()
-                    .describe(
-                      "The parameter that differs between curveLabels / curves in this figure (i.e. what's swept between series), or empty string. Do NOT put xAxis or yAxis here — this is specifically the between-curve variable.",
-                    ),
-                  curveLabels: z
-                    .array(z.string())
-                    .describe("Labels of the curves/series shown"),
-                }),
-              ),
-            }),
-          }),
-          prompt: [
-            "Build a complete inventory of the FIGURES in this scientific paper.",
-            "Scan the text for figure references and captions (Figure/Fig.).",
-            "When a figure has distinct labeled panels (a), (b), (c), or (d), list each panel as a separate selectable item with labels such as Figure 4a, Figure 4b, Figure 4c, and Figure 4d whenever the text provides panel-specific information.",
-            "Do not collapse panels that have different conditions, variables, axes, curve labels, or plotted quantities. Preserve the panel-specific caption or description for each item.",
-            "For each distinct figure, describe what it plots and identify axes and any curve/series labels.",
-            "Return them in order.",
-            "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
-            "Paper text:",
-            clip(paperText, 15000),
-          ].join("\n\n"),
-        });
+        const chunkResults = await mapWithConcurrency(
+          chunks,
+          MAX_CONCURRENT_CHUNKS,
+          scanChunk,
+        );
 
         // Combine xAxis + yAxis + the between-curve sweep variable into a single
         // 'changingVariable' array. Done here in code (not left to the LLM) so it's
         // deterministic and doesn't cost extra tokens/another model call.
-        const rawFigures = (
-          object as {
-            figures: Array<{
-              label: string;
-              caption: string;
-              description: string;
-              xAxis: string;
-              yAxis: string;
-              sweepVariable: string;
-              curveLabels: string[];
-            }>;
-          }
-        ).figures;
+        const rawFigures = mergeFigures(chunkResults.flat());
 
         const figures = rawFigures.map(({ sweepVariable, ...rest }) => {
           const changingVariable = Array.from(
@@ -291,7 +448,15 @@ export async function POST(req: Request) {
           return { ...rest, changingVariable };
         });
 
-        return Response.json({ figures });
+        return Response.json({
+          figures,
+          // Lets the front-end optionally warn the user that a few sections
+          // of a very long paper couldn't be scanned in time, instead of
+          // silently returning an incomplete list with no explanation.
+          ...(chunkFailures > 0
+            ? { partial: true, chunkFailures, totalChunks: chunks.length }
+            : {}),
+        });
       } catch (err) {
         console.error("extract/figures failed:", err);
         if (err instanceof DeadlineExceededError) {
