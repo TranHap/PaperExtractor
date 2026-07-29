@@ -135,16 +135,21 @@ export function FigureValuesStep() {
 
       if (!res.ok) throw new Error(data.error || "Trích xuất thất bại");
 
-      const extractedValues = data.values as FieldValue[];
-      const digitizationColumns = [xField, yField, seriesField]
-        .filter((n): n is string => typeof n === "string" && n.trim().length > 0);
-      const newFigureContext = {
-        values: extractedValues,
-        curveLabels: data.curveLabels ?? [],
-        changingVariable: data.changingVariable,
-        changingFieldNames: digitizationColumns,
-        notes: data.notes,
-      };
+const extractedValues = data.values as FieldValue[];
+
+       const sanitizedValues = extractedValues.map((v) =>
+         digitizationColumns.includes(v.name)
+           ? { ...v, value: "", confidence: 0, source: "digitization column — skipped" }
+           : v,
+       );
+
+       const newFigureContext = {
+         values: sanitizedValues,
+         curveLabels: data.curveLabels ?? [],
+         changingVariable: data.changingVariable,
+         changingFieldNames: digitizationColumns,
+         notes: data.notes,
+       };
       if (currentFigureId) {
         setFigureContextByFigure({
           ...figureContextByFigure,
@@ -153,7 +158,7 @@ export function FigureValuesStep() {
         setFigureContext(newFigureContext);
       }
 
-      const merged = buildMerged(schema, [], extractedValues);
+      const merged = buildMerged(schema, [], sanitizedValues);
 
       if (currentFigureId) {
         setResolvedContextByFigure({
@@ -170,6 +175,16 @@ export function FigureValuesStep() {
       setLoading(false);
     }
   }
+
+  const digitizationColumns = useMemo(
+    () =>
+      [xField, yField, seriesField].filter(
+        (n): n is string => typeof n === "string" && n.trim().length > 0,
+      ),
+    [xField, yField, seriesField],
+  );
+
+  const hasDigitizationColumns = digitizationColumns.length > 0;
 
   const canProceed = baseValues.some((v) => v.value?.trim());
 
@@ -206,6 +221,37 @@ export function FigureValuesStep() {
           Trích xuất từ figure
         </Button>
       </div>
+
+      {hasDigitizationColumns && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/30 p-3">
+          <span className="text-xs font-medium text-muted-foreground">
+            Cột số hóa:
+          </span>
+          {digitizationColumns.map((col) => {
+            const role =
+              col === xField
+                ? "x-col"
+                : col === yField
+                  ? "y-col"
+                  : col === seriesField
+                    ? "series-col"
+                    : null;
+            return (
+              <span
+                key={col}
+                className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-mono text-primary"
+              >
+                {role && (
+                  <span className="text-[10px] font-medium uppercase tracking-wide text-primary/60">
+                    {role}
+                  </span>
+                )}
+                {col}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {error && (
         <p className="mb-4 flex items-center gap-1.5 text-sm text-destructive">
