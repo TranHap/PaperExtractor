@@ -122,6 +122,37 @@ export function FigureDigitizer({
     fy: number;
   } | null>(null);
 
+  // Holding Space (or holding the middle mouse button) always pans the
+  // canvas, no matter what tool/mode is active — mirrors the convention
+  // from Figma/Photoshop/etc. This gives an unambiguous way to move the
+  // image around without ever risking placing/dragging a point.
+  const [spacePressed, setSpacePressed] = useState(false);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat) return;
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (isTyping) return;
+      e.preventDefault();
+      setSpacePressed(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      setSpacePressed(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
+
   // Multi-level undo/redo history over `value.points` snapshots.
   const [past, setPast] = useState<DigitizedPoint[][]>([]);
   const [future, setFuture] = useState<DigitizedPoint[][]>([]);
@@ -227,10 +258,15 @@ export function FigureDigitizer({
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (e.button !== 0) return;
+      // Middle mouse button, or Space held down, always pans — regardless
+      // of selection mode or a pending add-point/calibration action.
+      const forcePan = e.button === 1 || spacePressed;
+      if (e.button !== 0 && !forcePan) return;
       e.preventDefault();
 
-      if (selectionMode) {
+      if (draggingRef.current || draggingPointRef.current !== null) return;
+
+      if (selectionMode && !forcePan) {
         const el = wrapRef.current;
         if (!el) return;
         const rect = el.getBoundingClientRect();
@@ -249,16 +285,16 @@ export function FigureDigitizer({
         return;
       }
 
-      if (draggingRef.current) return;
-      if (draggingPointRef.current !== null) return;
-      if (pending) return;
-
+      // NOTE: we deliberately do NOT bail out when `pending` is set. A
+      // press-and-drag here still pans the canvas; handleClick below
+      // decides whether the gesture ended up being a genuine drag (pan)
+      // or a stationary tap (place the point/ref), using didPanRef.
       didPanRef.current = false;
       setIsPanning(true);
       panStart.current = { x: e.clientX, y: e.clientY };
       panStartTranslate.current = { ...translate };
     },
-    [selectionMode, translate, scale, pending],
+    [selectionMode, translate, scale, spacePressed],
   );
 
   const handleMouseMove = useCallback(
@@ -371,7 +407,6 @@ export function FigureDigitizer({
       setSelectionRect(null);
     } else {
       setIsPanning(false);
-      didPanRef.current = false;
     }
     draggingRef.current = null;
   }, [selectionMode, selectionRect, value.points, dragPreview]);
@@ -494,8 +529,14 @@ export function FigureDigitizer({
   }
 
   function handleClick(e: React.MouseEvent) {
+    // Read-then-clear: this is the first point after mouseup where it's
+    // safe to know "did this gesture just pan the canvas?" — clearing it
+    // here (not in mouseup) matters because mouseup fires before click.
+    const didPan = didPanRef.current;
+    didPanRef.current = false;
     if (selectionMode) return;
-    if (!pending || !wrapRef.current || didPanRef.current) return;
+    if (spacePressed || didPan) return;
+    if (!pending || !wrapRef.current) return;
     const rect = wrapRef.current.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -565,11 +606,15 @@ export function FigureDigitizer({
       }
 
       if (pending) {
-        // Tap-to-place: don't start a pan, wait for touchend to know if it
-        // was a tap (short move) vs. a scroll/pan gesture.
+        // Tap-to-place: wait for touchend to know if it was a tap (short
+        // move → place the point/ref) vs. a scroll/pan gesture. Still prime
+        // panStart/panStartTranslate so that if it does turn into a real
+        // drag, the canvas pans from the correct starting offset.
         lastTouchRef.current = { x: touch.clientX, y: touch.clientY };
         didPanRef.current = false;
         touchModeRef.current = "pan";
+        panStart.current = { x: touch.clientX, y: touch.clientY };
+        panStartTranslate.current = { ...translate };
         return;
       }
 
@@ -909,11 +954,13 @@ export function FigureDigitizer({
             "relative w-full select-none overflow-hidden rounded-lg border border-border bg-card",
             isPanning
               ? "cursor-grabbing"
-              : selectionMode
-                ? "cursor-crosshair"
-                : pending
+              : spacePressed
+                ? "cursor-grab"
+                : selectionMode
                   ? "cursor-crosshair"
-                  : "cursor-default",
+                  : pending
+                    ? "cursor-crosshair"
+                    : "cursor-default",
           )}
         >
           <img
@@ -954,9 +1001,10 @@ export function FigureDigitizer({
                   transform: `translate(-50%, -50%) scale(${1 / scale})`,
                 }}
                 onMouseDown={(e) => {
+                  if (selectionMode || e.button !== 0) return;
+                  if (spacePressed) return; // let Space+drag pan through
                   e.stopPropagation();
                   e.preventDefault();
-                  if (selectionMode) return;
                   draggingRef.current = { axis: d.axis, idx: d.idx };
                 }}
                 onTouchStart={(e) => {
@@ -1001,13 +1049,14 @@ export function FigureDigitizer({
                     transform: `translate(-50%, -50%) scale(${1 / scale})`,
                   }}
                   onMouseDown={(e) => {
-                    if (selectionMode || pending) return;
+                    if (selectionMode || e.button !== 0) return;
+                    if (spacePressed) return; // let Space+drag pan through
                     e.stopPropagation();
                     e.preventDefault();
                     draggingPointRef.current = i;
                   }}
                   onTouchStart={(e) => {
-                    if (selectionMode || pending) return;
+                    if (selectionMode) return;
                     e.stopPropagation();
                     draggingPointRef.current = i;
                     touchModeRef.current = "drag-point";

@@ -3,7 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 import { getTextForTask } from "@/lib/paper-sections";
 
-export const runtime = 'edge';
+export const runtime = "edge";
 export const maxDuration = 60;
 
 const openaiProvider = createOpenAI();
@@ -23,20 +23,57 @@ const openaiProvider = createOpenAI();
 // DeepSeek.
 const MODEL = openaiProvider.chat("gpt-4.1-mini");
 
+// Netlify Edge Functions have a HARD 40s "response header" timeout that cannot
+// be raised (see docs.netlify.com/build/edge-functions/limits) — this is what's
+// actually producing the raw HTML "504" the front-end has to special-case.
+// Next.js's `export const maxDuration = 60` above is a Vercel-only hint and is
+// silently ignored on Netlify, so it does nothing here.
+//
+// Instead of hoping every call finishes in time, we race each model call
+// against an internal budget comfortably under 40s. If we're about to run out,
+// we abort the in-flight request and return a clean JSON error ourselves —
+// so the client ALWAYS gets JSON back, never a bare infra-level 504 page.
+const NETLIFY_EDGE_BUDGET_MS = 33_000;
+
+class DeadlineExceededError extends Error {
+  constructor(
+    msg = "Yêu cầu mất quá lâu để xử lý (vượt giới hạn thời gian của server), thử lại giúp mình.",
+  ) {
+    super(msg);
+    this.name = "DeadlineExceededError";
+  }
+}
+
 async function retryStreamObject(
   args: any,
   retries = 2,
+  budgetMs = NETLIFY_EDGE_BUDGET_MS,
 ): Promise<{ object: unknown }> {
+  const deadline = Date.now() + budgetMs;
   let lastError: Error | null = null;
+
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const remaining = deadline - Date.now();
+    // Don't start another attempt we have no realistic chance of finishing —
+    // failing fast here with clean JSON beats letting Netlify's own 40s
+    // cutoff hand the browser a raw HTML 504 instead.
+    if (remaining < 4000) {
+      throw lastError ?? new DeadlineExceededError();
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), remaining);
+
     try {
       const result = streamText({
         ...args,
         model: MODEL,
+        abortSignal: controller.signal,
       });
 
       const object = await result.output;
       const usage = await result.usage;
+      clearTimeout(timer);
       const cachedTokens = usage?.inputTokenDetails?.cacheReadTokens;
       if (typeof cachedTokens === "number") {
         console.log("[openai cache]", {
@@ -47,9 +84,20 @@ async function retryStreamObject(
 
       return { object: object as unknown };
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      clearTimeout(timer);
+      const aborted = controller.signal.aborted;
+      lastError = aborted
+        ? new DeadlineExceededError()
+        : err instanceof Error
+          ? err
+          : new Error(String(err));
+
+      if (aborted) break; // budget's gone — no point trying again
+      const timeLeft = deadline - Date.now();
+      if (attempt < retries && timeLeft > 2000) {
+        await new Promise((r) =>
+          setTimeout(r, Math.min(1000 * (attempt + 1), timeLeft - 1000)),
+        );
       }
     }
   }
@@ -58,9 +106,13 @@ async function retryStreamObject(
 
 const fieldValueSchema = z.object({
   name: z.string().describe("The exact field name from the schema"),
-  value: z.string().describe("Extracted value as a string, or empty string if not found"),
+  value: z
+    .string()
+    .describe("Extracted value as a string, or empty string if not found"),
   confidence: z.number().min(0).max(1).describe("Confidence 0-1"),
-  source: z.string().describe("Short quote or location supporting the value, or empty string"),
+  source: z
+    .string()
+    .describe("Short quote or location supporting the value, or empty string"),
 });
 
 function clip(text: string, max = 90000) {
@@ -135,13 +187,16 @@ export async function POST(req: Request) {
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "",
             "Paper text:",
-            clip(paperText, 90000),
+            clip(paperText, 20000),
           ].join("\n\n"),
         });
 
         return Response.json(object as Record<string, unknown>);
       } catch (err) {
         console.error("extract/paper_characteristics failed:", err);
+        if (err instanceof DeadlineExceededError) {
+          return Response.json({ error: err.message }, { status: 500 });
+        }
         if (err && typeof err === "object" && "text" in err) {
           console.error(
             "Raw model output that failed to parse:",
@@ -163,6 +218,7 @@ export async function POST(req: Request) {
       try {
         const { object } = await retryStreamObject({
           model: MODEL,
+          maxOutputTokens: 16000,
           output: Output.object({
             schema: z.object({
               figures: z.array(
@@ -203,7 +259,7 @@ export async function POST(req: Request) {
             "Return them in order.",
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "Paper text:",
-            clip(paperText),
+            clip(paperText, 15000),
           ].join("\n\n"),
         });
 
@@ -238,6 +294,9 @@ export async function POST(req: Request) {
         return Response.json({ figures });
       } catch (err) {
         console.error("extract/figures failed:", err);
+        if (err instanceof DeadlineExceededError) {
+          return Response.json({ error: err.message }, { status: 500 });
+        }
         if (err && typeof err === "object" && "text" in err) {
           console.error(
             "Raw model output that failed to parse:",
@@ -318,48 +377,52 @@ export async function POST(req: Request) {
           prompt: [
             "You are extracting values for the FIXED VARIABLES of ONE SPECIFIC figure in a scientific paper.",
             "",
-             "CONTEXT:",
-             "- 'Figure' below is rich metadata about this exact figure/panel, including its already-determined 'changingVariable' (quantities that vary WITHIN each curve, e.g. its axes) and 'curveLabels' (the quantity that VARIES BETWEEN curves, if this figure has multiple series). Both are already decided — do not re-derive them, just use them. DO NOT infer any additional changing variables",
-             "- 'Fields' is the full list of fields you must produce an answer for (a value, or an intentional empty string).",
-             "- 'Digitization columns' below identify which schema fields correspond to the digitized x, y, and series output columns. These are structural output columns from digitization, not values extracted from paper text — treat them as OFF-LIMITS exactly like changingVariable/curveLabels.",
+            "CONTEXT:",
+            "- 'Figure' below is rich metadata about this exact figure/panel, including its already-determined 'changingVariable' (quantities that vary WITHIN each curve, e.g. its axes) and 'curveLabels' (the quantity that VARIES BETWEEN curves, if this figure has multiple series). Both are already decided — do not re-derive them, just use them. DO NOT infer any additional changing variables",
+            "- 'Fields' is the full list of fields you must produce an answer for (a value, or an intentional empty string).",
+            "- 'Digitization columns' below identify which schema fields correspond to the digitized x, y, and series output columns. These are structural output columns from digitization, not values extracted from paper text — treat them as OFF-LIMITS exactly like changingVariable/curveLabels.",
             "",
-             "RULES:",
-             "1. FIRST, for every field in 'Fields', decide whether it semantically matches one of the Figure's already-determined 'changingVariable' entries or its 'curveLabels' quantity — match by meaning, not exact string (e.g. field 'pH' matches a curveLabels quantity described as 'Initial pH'). Every field name you classify this way MUST be added to 'changingFieldNames', using the exact 'name' string as given in 'Fields'. ",
-             "2. The fields mapped to digitization output columns ('digitizationXField', 'digitizationYField', 'digitizationSeriesField') are OFF-LIMITS — they represent the structural columns of the digitized dataset, not values extracted from paper text. Treat them exactly like changingVariable/curveLabels: return value = '' and confidence = 0, and add them to 'changingFieldNames'.",
-             "3. If a field matches EITHER a 'changingVariable' entry OR the 'curveLabels' quantity OR is a digitization column — no matter whether it varies within each curve (axis) or between curves (series) — it is OFF-LIMITS: always return value = '' and confidence = 0 for that field. This applies with NO exceptions, even if the paper text states a seemingly fixed number for it (e.g. a total duration, an endpoint, or any other scalar) — that field belongs to the varying quantity for this figure and must stay empty here.",
-             "3. For all OTHER fields — the FIXED VARIABLES, i.e. fields that do NOT match 'changingVariable' or 'curveLabels' — determine their value normally. Treat the Figure's caption/description as ground truth for this figure's specific condition, and ground the value in the figure metadata or the paper text (e.g. the experimental setup / methods section for conditions shared across figures such as material, oxidant, dosages, etc.).",
-             "4. If a fixed-variable field's value truly cannot be determined even from the general experimental setup in the paper, return empty string with confidence 0 rather than guessing.",
-             "5. For fields with an 'options' list, only return one of those exact option strings, or empty string if none apply.",
-             "6. 'source' should be a short quote or location (e.g. figure caption, section name) that supports the value.",
-             "7. CRITICAL — avoid cross-figure contamination: the paper text may contain OTHER sections describing a DIFFERENT figure/panel where some field (e.g. pH, temperature, dosage, concentration, time) is swept across several values (e.g. 'pH = 4, 6, 8, 10'). That sweep belongs ONLY to that other figure, not to this one. Do not borrow one of those swept values for a fixed-variable field here — either return empty string with confidence 0, or use a fixed/default value ONLY if the text explicitly states it applies broadly (e.g. a general experimental conditions caption that lists fixed parameters for a whole figure set, such as '[TC] = 45 µM, T = 28°C unless otherwise noted').",
-             "8. Never assume a field takes a value just because numbers for that field exist somewhere in the paper — verify those numbers are actually associated with THIS figure before using them.",
-              "9. FALLBACK — 'Materials context' (if provided below) is a pre-built reference table of materials and their characteristics, extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). If a fixed-variable field is still empty after checking 'Paper text', AND you have already determined which material (e.g. which catalyst) this figure/curve is about, look up that exact material's name in 'Materials context' and use its matching property if one exists — matching by meaning (e.g. field 'SBET (catalyst)' matches a material property named 'BET surface area'). Set 'source' to mention it came from the materials table (e.g. 'Materials context: Cu-rGO LDH, BET surface area'). Do NOT use a property belonging to a DIFFERENT material than the one this figure/curve is about.",
-             "",
+            "RULES:",
+            "1. FIRST, for every field in 'Fields', decide whether it semantically matches one of the Figure's already-determined 'changingVariable' entries or its 'curveLabels' quantity — match by meaning, not exact string (e.g. field 'pH' matches a curveLabels quantity described as 'Initial pH'). Every field name you classify this way MUST be added to 'changingFieldNames', using the exact 'name' string as given in 'Fields'. ",
+            "2. The fields mapped to digitization output columns ('digitizationXField', 'digitizationYField', 'digitizationSeriesField') are OFF-LIMITS — they represent the structural columns of the digitized dataset, not values extracted from paper text. Treat them exactly like changingVariable/curveLabels: return value = '' and confidence = 0, and add them to 'changingFieldNames'.",
+            "3. If a field matches EITHER a 'changingVariable' entry OR the 'curveLabels' quantity OR is a digitization column — no matter whether it varies within each curve (axis) or between curves (series) — it is OFF-LIMITS: always return value = '' and confidence = 0 for that field. This applies with NO exceptions, even if the paper text states a seemingly fixed number for it (e.g. a total duration, an endpoint, or any other scalar) — that field belongs to the varying quantity for this figure and must stay empty here.",
+            "3. For all OTHER fields — the FIXED VARIABLES, i.e. fields that do NOT match 'changingVariable' or 'curveLabels' — determine their value normally. Treat the Figure's caption/description as ground truth for this figure's specific condition, and ground the value in the figure metadata or the paper text (e.g. the experimental setup / methods section for conditions shared across figures such as material, oxidant, dosages, etc.).",
+            "4. If a fixed-variable field's value truly cannot be determined even from the general experimental setup in the paper, return empty string with confidence 0 rather than guessing.",
+            "5. For fields with an 'options' list, only return one of those exact option strings, or empty string if none apply.",
+            "6. 'source' should be a short quote or location (e.g. figure caption, section name) that supports the value.",
+            "7. CRITICAL — avoid cross-figure contamination: the paper text may contain OTHER sections describing a DIFFERENT figure/panel where some field (e.g. pH, temperature, dosage, concentration, time) is swept across several values (e.g. 'pH = 4, 6, 8, 10'). That sweep belongs ONLY to that other figure, not to this one. Do not borrow one of those swept values for a fixed-variable field here — either return empty string with confidence 0, or use a fixed/default value ONLY if the text explicitly states it applies broadly (e.g. a general experimental conditions caption that lists fixed parameters for a whole figure set, such as '[TC] = 45 µM, T = 28°C unless otherwise noted').",
+            "8. Never assume a field takes a value just because numbers for that field exist somewhere in the paper — verify those numbers are actually associated with THIS figure before using them.",
+            "9. FALLBACK — 'Materials context' (if provided below) is a pre-built reference table of materials and their characteristics, extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). If a fixed-variable field is still empty after checking 'Paper text', AND you have already determined which material (e.g. which catalyst) this figure/curve is about, look up that exact material's name in 'Materials context' and use its matching property if one exists — matching by meaning (e.g. field 'SBET (catalyst)' matches a material property named 'BET surface area'). Set 'source' to mention it came from the materials table (e.g. 'Materials context: Cu-rGO LDH, BET surface area'). Do NOT use a property belonging to a DIFFERENT material than the one this figure/curve is about.",
+            "",
 
-             // IMPORTANT — prompt-caching order: OpenAI's automatic prompt caching
+            // IMPORTANT — prompt-caching order: OpenAI's automatic prompt caching
             // matches on a shared PREFIX across requests (>=1024 tokens). Everything above this point plus
             // 'Fields' and 'Paper text' below are IDENTICAL on every figure_extract
             // call for the same paper/schema, so they form a stable, cacheable
-             // prefix. 'Figure', and 'Materials context' are the
-             // per-call-varying parts, so they must stay AFTER 'Fields' and 'Paper text'.
-             // Do not move any per-call-varying content earlier — that breaks the
-             // prefix match for everything that follows it.
-             "Fields to extract (JSON):",
-             JSON.stringify(fields, null, 2),
-             "Paper text:",
-             clip(paperText, 60000),
-             "Figure (JSON) — the specific figure/panel to extract values for, including its already-determined changingVariable and curveLabels:",
-             JSON.stringify(figure, null, 2),
-             "Digitization columns:",
-             JSON.stringify({
-               digitizationXField: xField ?? null,
-               digitizationYField: yField ?? null,
-               digitizationSeriesField: seriesField ?? null,
-             }, null, 2),
-             // Đặt SAU 'Figure' (không đặt sớm hơn) vì đây cũng là phần thay đổi
-             // theo call/context giống 'Figure', không ảnh hưởng tới cache prefix
-             // ổn định của 'Fields' + 'Paper text' phía trên.
-             "Materials context (JSON) - reference table of materials and their characteristics, built once from the whole paper. Use ONLY as fallback per rule 9:",
+            // prefix. 'Figure', and 'Materials context' are the
+            // per-call-varying parts, so they must stay AFTER 'Fields' and 'Paper text'.
+            // Do not move any per-call-varying content earlier — that breaks the
+            // prefix match for everything that follows it.
+            "Fields to extract (JSON):",
+            JSON.stringify(fields, null, 2),
+            "Paper text:",
+            clip(paperText, 15000),
+            "Figure (JSON) — the specific figure/panel to extract values for, including its already-determined changingVariable and curveLabels:",
+            JSON.stringify(figure, null, 2),
+            "Digitization columns:",
+            JSON.stringify(
+              {
+                digitizationXField: xField ?? null,
+                digitizationYField: yField ?? null,
+                digitizationSeriesField: seriesField ?? null,
+              },
+              null,
+              2,
+            ),
+            // Đặt SAU 'Figure' (không đặt sớm hơn) vì đây cũng là phần thay đổi
+            // theo call/context giống 'Figure', không ảnh hưởng tới cache prefix
+            // ổn định của 'Fields' + 'Paper text' phía trên.
+            "Materials context (JSON) - reference table of materials and their characteristics, built once from the whole paper. Use ONLY as fallback per rule 9:",
             materialsContext
               ? JSON.stringify(materialsContext, null, 2)
               : "(none provided)",
@@ -393,8 +456,9 @@ export async function POST(req: Request) {
         // của quá trình số hóa — không phải giá trị trích xuất từ paper text —
         // nên force thêm vào changingFieldNames để frontend hiển thị đúng group
         // "biến thay đổi" (để trống).
-        const digitizationColumns = [xField, yField, seriesField]
-          .filter((n): n is string => typeof n === "string" && n.trim().length > 0);
+        const digitizationColumns = [xField, yField, seriesField].filter(
+          (n): n is string => typeof n === "string" && n.trim().length > 0,
+        );
 
         const llmResult = object as {
           values: unknown;
@@ -413,6 +477,9 @@ export async function POST(req: Request) {
         });
       } catch (err) {
         console.error("extract/figure_extract failed:", err);
+        if (err instanceof DeadlineExceededError) {
+          return Response.json({ error: err.message }, { status: 500 });
+        }
         if (err && typeof err === "object" && "text" in err) {
           console.error(
             "Raw model output that failed to parse:",
