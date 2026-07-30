@@ -145,7 +145,7 @@ export function DigitizeStep() {
     <StepShell
       step={5}
       total={8}
-      title="Digitize Figure"
+      title="Digitize"
       description="Chọn ảnh chứa figure, hiệu chỉnh trục X/Y bằng cách bấm 2 điểm tham chiếu mỗi trục, rồi bấm dọc theo từng đường cong để số hóa dữ liệu."
       onBack={goBack}
       onNext={goNext}

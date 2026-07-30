@@ -143,19 +143,19 @@ export const STEPS: StepMeta[] = [
   {
     id: "schema",
     index: 1,
-    title: "Upload Schema",
+    title: "Schema",
     subtitle: "Định nghĩa các field cần trích xuất",
   },
   {
     id: "parse",
     index: 2,
-    title: "Parse Paper",
+    title: "Upload Paper",
     subtitle: "Tải PDF & bóc tách nội dung",
   },
   {
     id: "paper-characteristics",
     index: 3,
-    title: "Paper Characteristics",
+    title: "Materials",
     subtitle: "Trích xuất đặc tính vật liệu & hằng số chung",
   },
   {
@@ -167,19 +167,19 @@ export const STEPS: StepMeta[] = [
   {
     id: "digitize",
     index: 5,
-    title: "Digitize Figure",
+    title: "Digitize",
     subtitle: "Số hóa điểm dữ liệu",
   },
   {
     id: "figure-values",
     index: 6,
-    title: "Figure Values",
+    title: "Fill Values",
     subtitle: "Điền giá trị cho các field còn thiếu của figure",
   },
   {
     id: "merge",
     index: 7,
-    title: "Merge & Preview",
+    title: "Review & Export",
     subtitle: "Hợp nhất mọi ngữ cảnh và xuất dữ liệu",
   },
   { id: "dataset", index: 8, title: "Dataset", subtitle: "Kết quả cuối cùng" },

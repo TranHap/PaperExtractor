@@ -72,7 +72,7 @@ export function PaperCharacteristicsStep() {
     <StepShell
       step={3}
       total={8}
-      title="Paper Characteristics"
+      title="Materials"
       description="Trích xuất toàn bộ đặc tính vật liệu và hằng số chung từ paper. Kết quả sẽ được dùng làm nguồn dự phòng khi trích xuất giá trị figure."
       onBack={goBack}
       onNext={goNext}

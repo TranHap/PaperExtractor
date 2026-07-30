@@ -174,7 +174,7 @@ export function SchemaStep() {
     <StepShell
       step={1}
       total={8}
-      title="Upload Schema"
+      title="Schema"
       description="Dán tên các cột/field cần trích xuất. Mỗi dòng một tên, hoặc paste CSV header. Bấm vào 1 field để chỉnh type, mô tả, đơn vị, hoặc options."
       hideBack
       nextLabel="Lưu schema & tiếp tục"

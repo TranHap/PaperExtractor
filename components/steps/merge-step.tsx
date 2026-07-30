@@ -56,7 +56,7 @@ export function MergeStep() {
     <StepShell
       step={7}
       total={8}
-      title="Merge"
+      title="Review & Export"
       description="Hợp nhất Experiment Context, Figure Context và các điểm đã số hóa thành một bản ghi hoàn chỉnh. Field figure chỉ điền vào chỗ mà experiment còn trống."
       onBack={goBack}
       onNext={goNext}

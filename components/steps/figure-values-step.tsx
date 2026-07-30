@@ -192,7 +192,7 @@ const extractedValues = data.values as FieldValue[];
     <StepShell
       step={6}
       total={8}
-      title="Figure Values"
+      title="Fill Values"
       description="Điền giá trị cho các field còn thiếu của figure đang chọn."
       onBack={goBack}
       onNext={goNext}

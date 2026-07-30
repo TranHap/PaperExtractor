@@ -48,7 +48,7 @@ export function ParseStep() {
     <StepShell
       step={2}
       total={8}
-      title="Parse Paper"
+      title="Upload Paper"
       description="Tải lên file PDF của paper. Hệ thống sẽ bóc tách toàn bộ text và render từng trang thành ảnh."
       onBack={goBack}
       onNext={goNext}
