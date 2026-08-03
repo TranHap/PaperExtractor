@@ -52,12 +52,13 @@ function validateInput(raw: string): Schema {
 
   let names: string[] = [];
 
-  if (lines.length === 1 && lines[0].includes(",")) {
+  if (lines[0].includes(",")) {
+    // Có dấu phẩy ở dòng đầu -> đây là CSV, chỉ lấy dòng header (dòng đầu
+    // tiên), bỏ qua các dòng data phía sau (nếu có).
     const header = parseLine(lines[0].replace(/^\uFEFF/, ""));
     names = header.map((n) => n.trim()).filter(Boolean);
-  } else if (lines.length > 1 && lines.every((l) => !l.includes(","))) {
-    names = lines;
   } else {
+    // Không có dấu phẩy -> mỗi dòng là một tên field.
     names = lines;
   }
 
