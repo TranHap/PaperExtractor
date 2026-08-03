@@ -1,6 +1,13 @@
 "use client";
 
-import { Download, FileJson, Sheet, RotateCcw, Database, Check } from "lucide-react";
+import {
+  Download,
+  FileJson,
+  Sheet,
+  RotateCcw,
+  Database,
+  Check,
+} from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -74,16 +81,26 @@ export function DatasetStep() {
   }
 
   function exportCsv() {
-    const headers = merged.map((m) => m.name);
+    const pointHeaders = [
+      seriesField || "series",
+      xField || "x",
+      yField || "y",
+    ];
+    const metaHeaders = merged.map((m) =>
+      m.series ? `${m.name} (${m.series})` : m.name,
+    );
+    const headers = [...pointHeaders, ...metaHeaders];
 
-    const rows = points.map((p) =>
-      merged.map((m) => {
+    const rows = points.map((p) => {
+      const pointValues = [p.series, p.x, p.y];
+      const metaValues = merged.map((m) => {
         if (m.series) {
           return m.series === p.series ? m.value : "";
         }
         return m.value;
-      }),
-    );
+      });
+      return [...pointValues, ...metaValues];
+    });
 
     const paperShort = paper?.title
       ? toShortName(paper.title)
