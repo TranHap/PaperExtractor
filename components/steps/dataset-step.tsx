@@ -55,10 +55,25 @@ export function DatasetStep() {
   } = useWorkflow();
 
   const base = resolvedContext ?? experiment?.values ?? [];
-  const merged = buildMerged(schema, base, figureContext?.values ?? []).filter(
-    (m) => m.value?.trim(),
-  );
+  const rawMerged = buildMerged(schema, base, figureContext?.values ?? []);
+  const merged = rawMerged.filter((m) => m.value?.trim());
   const points = digitization?.points ?? [];
+
+  // Order for CSV export: follow the schema's field order exactly, and keep
+  // fields with no value filled in (unlike `merged` above, which drops them
+  // for the on-screen summary/table).
+  const schemaFieldOrder = new Map(
+    (schema?.fields ?? []).map((f, i) => [f.name, i]),
+  );
+  const exportMerged = [...rawMerged].sort((a, b) => {
+    const ai = schemaFieldOrder.has(a.name)
+      ? schemaFieldOrder.get(a.name)!
+      : Number.MAX_SAFE_INTEGER;
+    const bi = schemaFieldOrder.has(b.name)
+      ? schemaFieldOrder.get(b.name)!
+      : Number.MAX_SAFE_INTEGER;
+    return ai - bi;
+  });
 
   const dataset: Dataset = {
     schemaName: schema?.name ?? "dataset",
@@ -86,14 +101,14 @@ export function DatasetStep() {
       xField || "x",
       yField || "y",
     ];
-    const metaHeaders = merged.map((m) =>
+    const metaHeaders = exportMerged.map((m) =>
       m.series ? `${m.name} (${m.series})` : m.name,
     );
     const headers = [...pointHeaders, ...metaHeaders];
 
     const rows = points.map((p) => {
       const pointValues = [p.series, p.x, p.y];
-      const metaValues = merged.map((m) => {
+      const metaValues = exportMerged.map((m) => {
         if (m.series) {
           return m.series === p.series ? m.value : "";
         }
