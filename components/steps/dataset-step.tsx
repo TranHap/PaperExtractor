@@ -59,22 +59,6 @@ export function DatasetStep() {
   const merged = rawMerged.filter((m) => m.value?.trim());
   const points = digitization?.points ?? [];
 
-  // Order for CSV export: follow the schema's field order exactly, and keep
-  // fields with no value filled in (unlike `merged` above, which drops them
-  // for the on-screen summary/table).
-  const schemaFieldOrder = new Map(
-    (schema?.fields ?? []).map((f, i) => [f.name, i]),
-  );
-  const exportMerged = [...rawMerged].sort((a, b) => {
-    const ai = schemaFieldOrder.has(a.name)
-      ? schemaFieldOrder.get(a.name)!
-      : Number.MAX_SAFE_INTEGER;
-    const bi = schemaFieldOrder.has(b.name)
-      ? schemaFieldOrder.get(b.name)!
-      : Number.MAX_SAFE_INTEGER;
-    return ai - bi;
-  });
-
   const dataset: Dataset = {
     schemaName: schema?.name ?? "dataset",
     paperTitle: paper?.title,
@@ -96,26 +80,33 @@ export function DatasetStep() {
   }
 
   function exportCsv() {
-    const pointHeaders = [
-      seriesField || "series",
-      xField || "x",
-      yField || "y",
-    ];
-    const metaHeaders = exportMerged.map((m) =>
-      m.series ? `${m.name} (${m.series})` : m.name,
+    // rawMerged is already ordered to match schema.fields (buildMerged takes
+    // care of that, and keeps fields with no value). x/y/series are just
+    // schema fields whose value comes from the digitized point instead of
+    // from experiment/figure context, so we slot them in at their real
+    // schema position rather than pinning them to the front.
+    const metaByName = new Map(rawMerged.map((m) => [m.name, m]));
+    const baseNames = rawMerged.map((m) => m.name);
+    const extraAxisNames = [xField, yField, seriesField].filter(
+      (n): n is string => !!n && !baseNames.includes(n),
     );
-    const headers = [...pointHeaders, ...metaHeaders];
+    const fieldNames = [...baseNames, ...extraAxisNames];
 
-    const rows = points.map((p) => {
-      const pointValues = [p.series, p.x, p.y];
-      const metaValues = exportMerged.map((m) => {
+    const headers = fieldNames;
+
+    const rows = points.map((p) =>
+      fieldNames.map((name) => {
+        if (name === xField) return p.x;
+        if (name === yField) return p.y;
+        if (name === seriesField) return p.series;
+        const m = metaByName.get(name);
+        if (!m) return "";
         if (m.series) {
           return m.series === p.series ? m.value : "";
         }
         return m.value;
-      });
-      return [...pointValues, ...metaValues];
-    });
+      }),
+    );
 
     const paperShort = paper?.title
       ? toShortName(paper.title)
