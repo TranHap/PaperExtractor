@@ -871,22 +871,47 @@ export function FigureDigitizer({
     commit(raw);
   }
 
+  // Series were previously identified purely by name. If two series ended
+  // up with the same name (e.g. the user typed one series' name to match
+  // another's), points/colors/counts — all matched by `p.series === name` —
+  // would appear to merge, and renaming one would silently rename the other
+  // too. To prevent that, we now enforce name uniqueness whenever a name is
+  // added or changed, and rename by index so only the intended row is
+  // touched.
+  function uniqueSeriesName(
+    base: string,
+    series: string[],
+    skipIndex?: number,
+  ): string {
+    const taken = new Set(series.filter((_, i) => i !== skipIndex));
+    if (!taken.has(base)) return base;
+    let n = 2;
+    while (taken.has(`${base} (${n})`)) n++;
+    return `${base} (${n})`;
+  }
+
   function addSeries() {
-    const name = `Series ${value.series.length + 1}`;
+    const name = uniqueSeriesName(
+      `Series ${value.series.length + 1}`,
+      value.series,
+    );
     onChange({ ...value, series: [...value.series, name], activeSeries: name });
   }
 
-  function renameSeries(oldName: string, newName: string) {
-    const series = value.series.map((s) => (s === oldName ? newName : s));
+  function renameSeries(index: number, rawName: string) {
+    const oldName = value.series[index];
+    const finalName =
+      rawName === "" ? rawName : uniqueSeriesName(rawName, value.series, index);
+    const series = value.series.map((s, i) => (i === index ? finalName : s));
     const points = value.points.map((p) =>
-      p.series === oldName ? { ...p, series: newName } : p,
+      p.series === oldName ? { ...p, series: finalName } : p,
     );
     onChange({
       ...value,
       series,
       points,
       activeSeries:
-        value.activeSeries === oldName ? newName : value.activeSeries,
+        value.activeSeries === oldName ? finalName : value.activeSeries,
     });
   }
 
@@ -1261,7 +1286,7 @@ export function FigureDigitizer({
                 />
                 <input
                   value={s}
-                  onChange={(e) => renameSeries(s, e.target.value)}
+                  onChange={(e) => renameSeries(i, e.target.value)}
                   autoComplete="off"
                   className="w-full bg-transparent text-xs outline-none"
                 />
