@@ -74,25 +74,16 @@ export function DatasetStep() {
   }
 
   function exportCsv() {
-    const xCol = xField || "X";
-    const yCol = yField || "Y";
-    const sCol = seriesField || "Series";
+    const headers = merged.map((m) => m.name);
 
-    const metaFields = merged.filter(
-      (m) => m.name !== xField && m.name !== yField && m.name !== seriesField,
-    );
-
-    const headers = [xCol, yCol, sCol, ...metaFields.map((m) => m.name)];
-
-    const rows = points.map((p) => {
-      const metaValues = metaFields.map((m) => {
+    const rows = points.map((p) =>
+      merged.map((m) => {
         if (m.series) {
           return m.series === p.series ? m.value : "";
         }
         return m.value;
-      });
-      return [p.x, p.y, p.series, ...metaValues];
-    });
+      }),
+    );
 
     const paperShort = paper?.title
       ? toShortName(paper.title)
