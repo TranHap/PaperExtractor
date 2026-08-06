@@ -1,19 +1,25 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, ScanSearch, AlertCircle, Check, FlaskConical, BookOpen } from "lucide-react";
+import {
+  Loader2,
+  ScanSearch,
+  AlertCircle,
+  Check,
+  FlaskConical,
+  BookOpen,
+} from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useWorkflow } from "@/lib/workflow-context";
-import type { PaperCharacteristicMaterial, PaperCharacteristicsResult } from "@/lib/types";
+import type {
+  PaperCharacteristicMaterial,
+  PaperCharacteristicsResult,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-function download(
-  name: string,
-  content: string,
-  type: string,
-) {
+function download(name: string, content: string, type: string) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -24,8 +30,13 @@ function download(
 }
 
 export function PaperCharacteristicsStep() {
-  const { paper, goBack, goNext, paperCharacteristics, setPaperCharacteristics } =
-    useWorkflow();
+  const {
+    paper,
+    goBack,
+    goNext,
+    paperCharacteristics,
+    setPaperCharacteristics,
+  } = useWorkflow();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,12 +48,14 @@ export function PaperCharacteristicsStep() {
       const res = await fetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: "paper_characteristics", paperText: paper.text }),
+        body: JSON.stringify({ task: "paper_context", paperText: paper.text }),
       });
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
         const text = await res.text();
-        throw new Error(`Server returned non-JSON response (status ${res.status}). This usually means the request timed out on the server. Please try again with a shorter paper, or contact support if the problem persists.`);
+        throw new Error(
+          `Server returned non-JSON response (status ${res.status}). This usually means the request timed out on the server. Please try again with a shorter paper, or contact support if the problem persists.`,
+        );
       }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Trích xuất thất bại");
@@ -62,7 +75,7 @@ export function PaperCharacteristicsStep() {
   function exportJson() {
     if (!paperCharacteristics) return;
     download(
-      "paper_characteristics.json",
+      "paper_context.json",
       JSON.stringify(paperCharacteristics, null, 2),
       "application/json",
     );
@@ -92,13 +105,19 @@ export function PaperCharacteristicsStep() {
               Tải JSON
             </Button>
           )}
-          <Button onClick={run} disabled={loading} variant={paperCharacteristics ? "outline" : "default"}>
+          <Button
+            onClick={run}
+            disabled={loading}
+            variant={paperCharacteristics ? "outline" : "default"}
+          >
             {loading ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <ScanSearch className="size-4" />
             )}
-            <span>{paperCharacteristics ? "Quét lại" : "Trích xuất đặc tính paper"}</span>
+            <span>
+              {paperCharacteristics ? "Quét lại" : "Trích xuất đặc tính paper"}
+            </span>
           </Button>
         </div>
       </div>
@@ -137,16 +156,24 @@ export function PaperCharacteristicsStep() {
                         <table className="w-full text-xs">
                           <thead className="bg-muted/60 text-left">
                             <tr>
-                              <th className="px-3 py-1.5 font-medium">Property</th>
+                              <th className="px-3 py-1.5 font-medium">
+                                Property
+                              </th>
                               <th className="px-3 py-1.5 font-medium">Value</th>
-                              <th className="px-3 py-1.5 font-medium">Source</th>
+                              <th className="px-3 py-1.5 font-medium">
+                                Source
+                              </th>
                             </tr>
                           </thead>
                           <tbody>
                             {mat.values.map((v, j) => (
                               <tr key={j} className="border-t border-border">
-                                <td className="px-3 py-1 font-mono">{v.name}</td>
-                                <td className="px-3 py-1 font-medium">{v.value || "—"}</td>
+                                <td className="px-3 py-1 font-mono">
+                                  {v.name}
+                                </td>
+                                <td className="px-3 py-1 font-medium">
+                                  {v.value || "—"}
+                                </td>
                                 <td className="px-3 py-1 text-muted-foreground">
                                   {v.source || ""}
                                 </td>
@@ -157,7 +184,9 @@ export function PaperCharacteristicsStep() {
                       </div>
                     )}
                     {mat.values.length === 0 && (
-                      <p className="text-xs text-muted-foreground">No characteristics extracted</p>
+                      <p className="text-xs text-muted-foreground">
+                        No characteristics extracted
+                      </p>
                     )}
                   </div>
                 ))}
@@ -181,7 +210,9 @@ export function PaperCharacteristicsStep() {
                     {paperCharacteristics.generalConstants.map((v, i) => (
                       <tr key={i} className="border-t border-border">
                         <td className="px-3 py-1 font-mono">{v.name}</td>
-                        <td className="px-3 py-1 font-medium">{v.value || "—"}</td>
+                        <td className="px-3 py-1 font-medium">
+                          {v.value || "—"}
+                        </td>
                         <td className="px-3 py-1 text-muted-foreground">
                           {v.source || ""}
                         </td>
@@ -207,7 +238,8 @@ export function PaperCharacteristicsStep() {
       {!paperCharacteristics && !loading && !error && (
         <div className="flex min-h-[200px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center">
           <p className="text-sm text-muted-foreground">
-            Bấm "Trích xuất đặc tính paper" để bóc tách toàn bộ vật liệu và hằng số.
+            Bấm "Trích xuất đặc tính paper" để bóc tách toàn bộ vật liệu và hằng
+            số.
           </p>
         </div>
       )}
