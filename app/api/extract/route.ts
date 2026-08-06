@@ -257,13 +257,19 @@ export async function POST(req: Request) {
     const task = body.task as string;
 
     // Trích xuất MỘT LẦN cho cả bài báo (không lặp lại theo từng figure):
-    // liệt kê mọi vật liệu được nhắc tới (catalyst, precursor, support, ...)
-    // cùng toàn bộ thông số/đặc tính của từng vật liệu (SBET, pHpzc, 2Theta,
-    // pore volume, kích thước hạt, thành phần nguyên tố, v.v.), cộng thêm các
-    // hằng số/điều kiện chung của cả bài (nếu có). Kết quả này sẽ được front-end
-    // lưu lại và truyền sang mỗi lần gọi "figure_extract" để dùng làm nguồn dự
-    // phòng khi field không tìm thấy trong text của riêng figure đó.
-    if (task === "paper_characteristics") {
+    // xây dựng "paper context" gồm 4 nhóm entity —
+    //   - materials          (catalyst, precursor, support, ...)
+    //   - oxidants           (peracetic acid, H2O2, persulfate, ...)
+    //   - micropollutants    (carbamazepine, ...)
+    //   - generalConditions  (điều kiện/hằng số mặc định dùng chung cho cả bài)
+    // — mỗi entity kèm toàn bộ thông số/đặc tính hoá lý của nó (materials:
+    // SBET, pHpzc, 2Theta, pore volume, kích thước hạt, thành phần nguyên tố...;
+    // oxidants: MW, pKa, O-O bond dissociation energy, standard reduction
+    // potential...; micropollutants: MW, LogKow, E/S/A/B/V...).
+    // Kết quả này sẽ được front-end lưu lại (paperContext) và truyền sang mỗi
+    // lần gọi "figure_extract" để dùng làm nguồn TRA CỨU (không phải suy luận)
+    // khi field không tìm thấy trong text của riêng figure đó.
+    if (task === "paper_context") {
       const { paperText } = body as { paperText: string };
 
       try {
@@ -272,29 +278,67 @@ export async function POST(req: Request) {
           maxOutputTokens: 30000, // gpt-4.1-nano: tối đa 32768 completion tokens
           output: Output.object({
             schema: z.object({
-              materials: z.array(
-                z.object({
-                  name: z
-                    .string()
-                    .describe(
-                      "Exact material name as referred to in the paper, e.g. 'Cu-rGO LDH', 'Mn-rGO LDH', 'rGO', 'Fe3O4'",
-                    ),
-                  role: z
-                    .string()
-                    .describe(
-                      "Role of this material in the study, e.g. 'catalyst', 'precursor', 'support', 'benchmark catalyst', or empty string",
-                    ),
-                  values: z
-                    .array(fieldValueSchema)
-                    .describe(
-                      "EVERY numeric or qualitative characteristic reported for this specific material anywhere in the paper: BET surface area, pore volume, pHpzc, XRD 2Theta / d-spacing, particle/crystallite size, elemental composition (Cu/Mg/Al/C %), degradation rate constant, etc. Do not limit yourself to a fixed list — extract everything found and give each its own entry with a clear 'name'.",
-                    ),
-                }),
-              ),
-              generalConstants: z
+              materials: z
+                .array(
+                  z.object({
+                    name: z
+                      .string()
+                      .describe(
+                        "Exact material name as referred to in the paper, e.g. 'Cu-rGO LDH', 'Mn-rGO LDH', 'rGO', 'Fe3O4'",
+                      ),
+                    role: z
+                      .string()
+                      .describe(
+                        "Role of this material in the study, e.g. 'catalyst', 'precursor', 'support', 'benchmark catalyst', or empty string",
+                      ),
+                    values: z
+                      .array(fieldValueSchema)
+                      .describe(
+                        "EVERY characterization property reported for this specific material anywhere in the paper: BET surface area, pore volume, pHpzc, XRD 2Theta / d-spacing, particle/crystallite size, elemental composition (Cu/Mg/Al/C %), degradation rate constant, etc. Do not limit yourself to a fixed list — extract everything found and give each its own entry with a clear 'name'.",
+                      ),
+                  }),
+                )
+                .describe(
+                  "Every catalyst, support, and precursor mentioned in the paper.",
+                ),
+              oxidants: z
+                .array(
+                  z.object({
+                    name: z
+                      .string()
+                      .describe(
+                        "Exact oxidant name as referred to in the paper, e.g. 'Peracetic acid', 'H2O2', 'Persulfate'",
+                      ),
+                    values: z
+                      .array(fieldValueSchema)
+                      .describe(
+                        "EVERY physicochemical property reported for this oxidant anywhere in the paper: MW, pKa, O-O bond dissociation energy, standard reduction potential, etc. Be exhaustive — extract everything found and give each its own entry with a clear 'name'.",
+                      ),
+                  }),
+                )
+                .describe("Every oxidant used/mentioned in the paper."),
+              micropollutants: z
+                .array(
+                  z.object({
+                    name: z
+                      .string()
+                      .describe(
+                        "Exact micropollutant / target compound name as referred to in the paper, e.g. 'Carbamazepine'",
+                      ),
+                    values: z
+                      .array(fieldValueSchema)
+                      .describe(
+                        "EVERY physicochemical property reported for this micropollutant anywhere in the paper: MW, LogKow, E, S, A, B, V (Abraham solvation parameters), etc. Be exhaustive — extract everything found and give each its own entry with a clear 'name'.",
+                      ),
+                  }),
+                )
+                .describe(
+                  "Every micropollutant / target pollutant studied in the paper.",
+                ),
+              generalConditions: z
                 .array(fieldValueSchema)
                 .describe(
-                  "Paper-wide default/fixed experimental conditions NOT tied to one specific material — e.g. default reaction temperature, default pollutant concentration, default oxidant dosage, HPLC wavelength, column type, flow rate — ONLY if explicitly stated as a general/shared condition (e.g. in Materials & Methods or a figure caption that says 'unless otherwise noted').",
+                  "Paper-wide default/fixed reaction conditions NOT tied to one specific material/oxidant/micropollutant — e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume, HPLC wavelength, column type, flow rate — ONLY if explicitly stated as a general/shared condition (e.g. in Materials & Methods or a figure caption that says 'unless otherwise noted').",
                 ),
               notes: z
                 .string()
@@ -304,16 +348,20 @@ export async function POST(req: Request) {
             }),
           }),
           prompt: [
-            "You are building a COMPLETE reference table of materials and quantitative characteristics mentioned ANYWHERE in this scientific paper.",
+            "You are building a COMPLETE, structured reference context (paper context) for this scientific paper, covering four kinds of entities: materials, oxidants, micropollutants, and general reaction conditions.",
             "",
             "INSTRUCTIONS:",
             "1. Scan the ENTIRE paper text: abstract, materials & methods, characterization, results & discussion, conclusion.",
-            "2. Identify every distinct material/sample studied (catalysts, precursors, supports, benchmark/comparison materials) by its exact name as used in the paper.",
-            "3. For each material, extract EVERY numeric or qualitative property reported for it anywhere in the text: surface area (SBET), pore volume, pHpzc, XRD peak positions / 2Theta / d-spacing, particle or crystallite size, elemental composition (wt% or %), rate constants, activation energy, dosage used, etc. Be exhaustive — do not stop at the first property you find.",
-            "4. Also extract general/default experimental constants that apply broadly across the paper (not tied to one material), only if the text explicitly frames them as default/shared conditions.",
-            "5. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g').",
-            "6. If a property is mentioned only qualitatively (e.g. 'high surface area') without a number, skip it — only extract concrete values.",
-            "7. Do not invent or infer values that are not explicitly stated.",
+            "2. Identify every catalyst, support, and precursor by its exact name as used in the paper, and list it under 'materials'.",
+            "3. Identify every oxidant used or mentioned in the paper, and list it under 'oxidants'.",
+            "4. Identify every micropollutant / target pollutant studied in the paper, and list it under 'micropollutants'.",
+            "5. For every material, extract EVERY characterization property reported for it anywhere in the text: surface area (SBET), pore volume, pHpzc, XRD peak positions / 2Theta / d-spacing, particle or crystallite size, elemental composition (wt% or %), rate constants, activation energy, dosage used, etc. Be exhaustive — do not stop at the first property you find.",
+            "6. For every oxidant, extract EVERY physicochemical property reported for it anywhere in the text: MW, pKa, O-O bond dissociation energy, standard reduction potential, etc. Be exhaustive.",
+            "7. For every micropollutant, extract EVERY physicochemical property reported for it anywhere in the text: MW, LogKow, E, S, A, B, V, etc. Be exhaustive.",
+            "8. Extract all default/shared reaction conditions that apply broadly across the paper (not tied to one specific material/oxidant/micropollutant) into 'generalConditions', only if the text explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume).",
+            "9. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g').",
+            "10. If a property is mentioned only qualitatively (e.g. 'high surface area') without a number, skip it — only extract concrete values.",
+            "11. Do not invent or infer values that are not explicitly stated.",
             "",
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "",
@@ -324,7 +372,7 @@ export async function POST(req: Request) {
 
         return Response.json(object as Record<string, unknown>);
       } catch (err) {
-        console.error("extract/paper_characteristics failed:", err);
+        console.error("extract/paper_context failed:", err);
         if (err instanceof DeadlineExceededError) {
           return Response.json({ error: err.message }, { status: 500 });
         }
@@ -482,7 +530,7 @@ export async function POST(req: Request) {
         figure,
         fields,
         paperText,
-        materialsContext,
+        paperContext,
         xField,
         yField,
         seriesField,
@@ -502,14 +550,23 @@ export async function POST(req: Request) {
           options?: string[];
         }[];
         paperText: string;
-        materialsContext?: unknown;
+        // paperContext = kết quả trả về của task "paper_context":
+        // { materials: [...], oxidants: [...], micropollutants: [...],
+        //   generalConditions: [...], notes }
+        paperContext?: {
+          materials?: unknown[];
+          oxidants?: unknown[];
+          micropollutants?: unknown[];
+          generalConditions?: unknown[];
+          [key: string]: unknown;
+        };
         xField?: string;
         yField?: string;
         seriesField?: string;
       };
       console.log("figure_extract for:", figure);
       console.log("fields to extract:", fields);
-      console.log("materialsContext provided:", !!materialsContext);
+      console.log("paperContext provided:", !!paperContext);
 
       // changingVariable + curveLabels đã được xác định TỪ TRƯỚC ở task "figures"
       // (không cần hỏi lại model ở đây). Không đưa 2 giá trị này vào đầu prompt
@@ -557,7 +614,12 @@ export async function POST(req: Request) {
             "6. 'source' should be a short quote or location (e.g. figure caption, section name) that supports the value.",
             "7. CRITICAL — avoid cross-figure contamination: the paper text may contain OTHER sections describing a DIFFERENT figure/panel where some field (e.g. pH, temperature, dosage, concentration, time) is swept across several values (e.g. 'pH = 4, 6, 8, 10'). That sweep belongs ONLY to that other figure, not to this one. Do not borrow one of those swept values for a fixed-variable field here — either return empty string with confidence 0, or use a fixed/default value ONLY if the text explicitly states it applies broadly (e.g. a general experimental conditions caption that lists fixed parameters for a whole figure set, such as '[TC] = 45 µM, T = 28°C unless otherwise noted').",
             "8. Never assume a field takes a value just because numbers for that field exist somewhere in the paper — verify those numbers are actually associated with THIS figure before using them.",
-            "9. FALLBACK — 'Materials context' (if provided below) is a pre-built reference table of materials and their characteristics, extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). If a fixed-variable field is still empty after checking 'Paper text', AND you have already determined which material (e.g. which catalyst) this figure/curve is about, look up that exact material's name in 'Materials context' and use its matching property if one exists — matching by meaning (e.g. field 'SBET (catalyst)' matches a material property named 'BET surface area'). Set 'source' to mention it came from the materials table (e.g. 'Materials context: Cu-rGO LDH, BET surface area'). Do NOT use a property belonging to a DIFFERENT material than the one this figure/curve is about.",
+            "9. FALLBACK — 'Paper context' (if provided below) is a pre-built reference table extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). It has four parts: 'materials' (catalysts/supports/precursors), 'oxidants', 'micropollutants', and 'generalConditions' (paper-wide default/shared conditions not tied to one specific entity). If a fixed-variable field is still empty after checking 'Paper text', resolve it by LOOKUP ONLY (never infer or compute a new value):",
+            "   a. Identify which entity the field belongs to: is it a property of a material/catalyst, of an oxidant, of a micropollutant, or is it a general paper-wide condition?",
+            "   b. Identify WHICH specific entity of that type this figure/curve is about (e.g. which catalyst, which oxidant, which micropollutant) — only proceed if that entity is already clear from the figure/curve context; do not guess it.",
+            "   c. Look up that exact entity by name in the matching array of 'Paper context' ('materials' / 'oxidants' / 'micropollutants'), or check 'generalConditions' directly if the field is a shared condition rather than tied to one entity.",
+            "   d. Copy that entity's matching property value — match by meaning, not exact string (e.g. field 'SBET (catalyst)' matches a materials property named 'BET surface area'; field 'MW (oxidant)' matches an oxidants property named 'MW'; field 'LogKow' matches a micropollutants property of the same name).",
+            "   Set 'source' to mention it came from Paper context (e.g. 'Paper context: Cu-rGO LDH (materials), BET surface area'). Do NOT use a property belonging to a DIFFERENT entity than the one this figure/curve is about, and never invent a value that isn't explicitly present in 'Paper context' or 'Paper text'.",
             "",
 
             // IMPORTANT — prompt-caching order: OpenAI's automatic prompt caching
@@ -587,9 +649,9 @@ export async function POST(req: Request) {
             // Đặt SAU 'Figure' (không đặt sớm hơn) vì đây cũng là phần thay đổi
             // theo call/context giống 'Figure', không ảnh hưởng tới cache prefix
             // ổn định của 'Fields' + 'Paper text' phía trên.
-            "Materials context (JSON) - reference table of materials and their characteristics, built once from the whole paper. Use ONLY as fallback per rule 9:",
-            materialsContext
-              ? JSON.stringify(materialsContext, null, 2)
+            "Paper context (JSON) - reference table of materials/oxidants/micropollutants/generalConditions, built once from the whole paper. Use ONLY as fallback per rule 9 (lookup only, never infer):",
+            paperContext
+              ? JSON.stringify(paperContext, null, 2)
               : "(none provided)",
           ].join("\n\n"),
         });
