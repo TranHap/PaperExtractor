@@ -7,32 +7,8 @@ export const runtime = "edge";
 export const maxDuration = 60;
 
 const openaiProvider = createOpenAI();
-// gpt-4.1-mini: mạnh hơn hẳn gpt-4.1-nano ở khả năng đọc hiểu & trích xuất
-// chi tiết (nano quá yếu, dễ bỏ sót thông tin dù vẫn còn dư token output),
-// vẫn khá rẻ so với gpt-4o/gpt-4.1 full, trần output 32.768 tokens.
-// Có hỗ trợ vision — task "image_params" (đọc ảnh) dùng được với model này.
-//
-// QUAN TRỌNG: OpenAI (cả Responses API lẫn Chat Completions API) dùng
-// "strict" JSON schema mode cho generateObject, bắt buộc MỌI field phải nằm
-// trong mảng "required" của schema. Zod converter coi field có .default(...)
-// là KHÔNG bắt buộc (optional) trong JSON Schema sinh ra, nên bất kỳ field
-// nào dùng .default("") / .default([]) đều gây lỗi 400 "Invalid schema ...
-// Missing '<field>'". Do đó toàn bộ .default(...) trong các schema bên dưới
-// đã được bỏ — model vẫn được dặn qua .describe(...) rằng phải trả về ""/[]
-// khi không tìm thấy dữ liệu, hành vi thực tế không đổi so với lúc dùng
-// DeepSeek.
 const MODEL = openaiProvider.chat("gpt-4.1-mini");
 
-// Netlify Edge Functions have a HARD 40s "response header" timeout that cannot
-// be raised (see docs.netlify.com/build/edge-functions/limits) — this is what's
-// actually producing the raw HTML "504" the front-end has to special-case.
-// Next.js's `export const maxDuration = 60` above is a Vercel-only hint and is
-// silently ignored on Netlify, so it does nothing here.
-//
-// Instead of hoping every call finishes in time, we race each model call
-// against an internal budget comfortably under 40s. If we're about to run out,
-// we abort the in-flight request and return a clean JSON error ourselves —
-// so the client ALWAYS gets JSON back, never a bare infra-level 504 page.
 const NETLIFY_EDGE_BUDGET_MS = 26_000;
 
 class DeadlineExceededError extends Error {
@@ -91,7 +67,7 @@ async function retryStreamObject(
           ? err
           : new Error(String(err));
 
-      if (aborted) break; // budget's gone — no point trying again
+      if (aborted) break; // budget's gone - no point trying again
       const timeLeft = deadline - Date.now();
       if (attempt < retries && timeLeft > 2000) {
         await new Promise((r) =>
