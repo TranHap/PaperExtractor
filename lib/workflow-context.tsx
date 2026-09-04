@@ -263,9 +263,15 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     figures,
     selectedFigure,
     resolvedContext,
+    resolvedContextByFigure,
     digitization,
+    digitizationByFigure,
     figureContext,
+    figureContextByFigure,
     imageParamsContext,
+    imageParamsContextByFigure,
+    exportedFigureIds,
+    paperCharacteristics,
   ]);
 
   const value = useMemo<WorkflowState>(() => {

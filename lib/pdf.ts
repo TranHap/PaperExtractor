@@ -48,12 +48,6 @@ function extractStructuredText(items: unknown[]): string {
   const textItems: TextItem[] = items.filter(isTextItem);
   if (textItems.length === 0) return "";
 
-  const pageHeight =
-    textItems.reduce(
-      (max, it) => Math.max(max, it.transform[5] + it.height),
-      0,
-    ) || 1;
-
   const lines = new Map<number, { x: number; text: string; size: number }[]>();
 
   for (const it of textItems) {
@@ -66,29 +60,27 @@ function extractStructuredText(items: unknown[]): string {
     lines.get(key)!.push({ x, text: it.str, size });
   }
 
-  const sortedLines = Array.from(lines.entries())
-    .sort((a, b) => b[0] - a[0])
-    .map(([, chars]) =>
-      chars
-        .sort((a, b) => a.x - b.x)
-        .map((c) => c.text)
-        .join(" "),
-    );
+  // Sorted top-to-bottom by y. Each entry carries its own y/chars together so
+  // there's no risk of a line's text being paired with a different line's y
+  // (Map iteration order is insertion order, not sorted order, so re-deriving
+  // y by index from `lines.keys()` after sorting would silently mismatch).
+  const sortedEntries = Array.from(lines.entries()).sort((a, b) => b[0] - a[0]);
 
   const result: string[] = [];
   let lastY: number | null = null;
   let lastSize = 12;
   const paragraphGap = 18;
 
-  for (let i = 0; i < sortedLines.length; i++) {
-    const line = sortedLines[i];
-    const y = Array.from(lines.keys())[i];
-    const sizes = lines.get(y) || [];
-    const avgSize = sizes.reduce((s, c) => s + c.size, 0) / (sizes.length || 1);
-    const isHeading = avgSize >= 14 && line.trim().length < 120;
+  for (const [y, chars] of sortedEntries) {
+    const line = chars
+      .sort((a, b) => a.x - b.x)
+      .map((c) => c.text)
+      .join(" ");
     const trimmed = line.trim();
-
     if (!trimmed) continue;
+
+    const avgSize = chars.reduce((s, c) => s + c.size, 0) / (chars.length || 1);
+    const isHeading = avgSize >= 14 && line.trim().length < 120;
 
     if (lastY !== null) {
       const gap = lastY - y;

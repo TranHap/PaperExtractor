@@ -1,7 +1,6 @@
 ﻿import { streamText, Output } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
-import { getTextForTask } from "@/lib/paper-sections";
 
 export const runtime = "edge";
 export const maxDuration = 60;
@@ -9,7 +8,11 @@ export const maxDuration = 60;
 const openaiProvider = createOpenAI();
 const MODEL = openaiProvider.chat("gpt-4.1-mini");
 
-const NETLIFY_EDGE_BUDGET_MS = 26_000;
+// Self-imposed abort budget for a single request. Kept a few seconds under
+// `maxDuration` above (the actual platform-enforced limit for this route) so
+// we can still return a clean JSON error instead of letting the platform
+// kill the function mid-response and hand the browser a raw timeout page.
+const EDGE_BUDGET_MS = 53_000;
 
 class DeadlineExceededError extends Error {
   constructor(
@@ -23,7 +26,7 @@ class DeadlineExceededError extends Error {
 async function retryStreamObject(
   args: any,
   retries = 2,
-  deadline: number = Date.now() + NETLIFY_EDGE_BUDGET_MS,
+  deadline: number = Date.now() + EDGE_BUDGET_MS,
 ): Promise<{ object: unknown }> {
   let lastError: Error | null = null;
 
@@ -342,7 +345,7 @@ export async function POST(req: Request) {
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "",
             "Paper text:",
-            clip(paperText, 20000),
+            clip(paperText, 60000),
           ].join("\n\n"),
         });
 
@@ -373,7 +376,7 @@ export async function POST(req: Request) {
       // One shared deadline for the WHOLE task — every chunk call below races
       // against this same absolute time, so running them in parallel doesn't
       // silently push the total wall-clock time past Netlify's 40s cutoff.
-      const taskDeadline = Date.now() + NETLIFY_EDGE_BUDGET_MS;
+      const taskDeadline = Date.now() + EDGE_BUDGET_MS;
 
       const CHUNK_SIZE = 9000;
       const CHUNK_OVERLAP = 500;
@@ -584,13 +587,13 @@ export async function POST(req: Request) {
             "1. FIRST, for every field in 'Fields', decide whether it semantically matches one of the Figure's already-determined 'changingVariable' entries or its 'curveLabels' quantity — match by meaning, not exact string (e.g. field 'pH' matches a curveLabels quantity described as 'Initial pH'). Every field name you classify this way MUST be added to 'changingFieldNames', using the exact 'name' string as given in 'Fields'. ",
             "2. The fields mapped to digitization output columns ('digitizationXField', 'digitizationYField', 'digitizationSeriesField') are OFF-LIMITS — they represent the structural columns of the digitized dataset, not values extracted from paper text. Treat them exactly like changingVariable/curveLabels: return value = '' and confidence = 0, and add them to 'changingFieldNames'.",
             "3. If a field matches EITHER a 'changingVariable' entry OR the 'curveLabels' quantity OR is a digitization column — no matter whether it varies within each curve (axis) or between curves (series) — it is OFF-LIMITS: always return value = '' and confidence = 0 for that field. This applies with NO exceptions, even if the paper text states a seemingly fixed number for it (e.g. a total duration, an endpoint, or any other scalar) — that field belongs to the varying quantity for this figure and must stay empty here.",
-            "3. For all OTHER fields — the FIXED VARIABLES, i.e. fields that do NOT match 'changingVariable' or 'curveLabels' — determine their value normally. Treat the Figure's caption/description as ground truth for this figure's specific condition, and ground the value in the figure metadata or the paper text (e.g. the experimental setup / methods section for conditions shared across figures such as material, oxidant, dosages, etc.).",
-            "4. If a fixed-variable field's value truly cannot be determined even from the general experimental setup in the paper, return empty string with confidence 0 rather than guessing.",
-            "5. For fields with an 'options' list, only return one of those exact option strings, or empty string if none apply.",
-            "6. 'source' should be a short quote or location (e.g. figure caption, section name) that supports the value.",
-            "7. CRITICAL — avoid cross-figure contamination: the paper text may contain OTHER sections describing a DIFFERENT figure/panel where some field (e.g. pH, temperature, dosage, concentration, time) is swept across several values (e.g. 'pH = 4, 6, 8, 10'). That sweep belongs ONLY to that other figure, not to this one. Do not borrow one of those swept values for a fixed-variable field here — either return empty string with confidence 0, or use a fixed/default value ONLY if the text explicitly states it applies broadly (e.g. a general experimental conditions caption that lists fixed parameters for a whole figure set, such as '[TC] = 45 µM, T = 28°C unless otherwise noted').",
-            "8. Never assume a field takes a value just because numbers for that field exist somewhere in the paper — verify those numbers are actually associated with THIS figure before using them.",
-            "9. FALLBACK — 'Paper context' (if provided below) is a pre-built reference table extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). It has four parts: 'materials' (catalysts/supports/precursors), 'oxidants', 'micropollutants', and 'generalConditions' (paper-wide default/shared conditions not tied to one specific entity). If a fixed-variable field is still empty after checking 'Paper text', resolve it by LOOKUP ONLY (never infer or compute a new value):",
+            "4. For all OTHER fields — the FIXED VARIABLES, i.e. fields that do NOT match 'changingVariable' or 'curveLabels' — determine their value normally. Treat the Figure's caption/description as ground truth for this figure's specific condition, and ground the value in the figure metadata or the paper text (e.g. the experimental setup / methods section for conditions shared across figures such as material, oxidant, dosages, etc.).",
+            "5. If a fixed-variable field's value truly cannot be determined even from the general experimental setup in the paper, return empty string with confidence 0 rather than guessing.",
+            "6. For fields with an 'options' list, only return one of those exact option strings, or empty string if none apply.",
+            "7. 'source' should be a short quote or location (e.g. figure caption, section name) that supports the value.",
+            "8. CRITICAL — avoid cross-figure contamination: the paper text may contain OTHER sections describing a DIFFERENT figure/panel where some field (e.g. pH, temperature, dosage, concentration, time) is swept across several values (e.g. 'pH = 4, 6, 8, 10'). That sweep belongs ONLY to that other figure, not to this one. Do not borrow one of those swept values for a fixed-variable field here — either return empty string with confidence 0, or use a fixed/default value ONLY if the text explicitly states it applies broadly (e.g. a general experimental conditions caption that lists fixed parameters for a whole figure set, such as '[TC] = 45 µM, T = 28°C unless otherwise noted').",
+            "9. Never assume a field takes a value just because numbers for that field exist somewhere in the paper — verify those numbers are actually associated with THIS figure before using them.",
+            "10. FALLBACK — 'Paper context' (if provided below) is a pre-built reference table extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). It has four parts: 'materials' (catalysts/supports/precursors), 'oxidants', 'micropollutants', and 'generalConditions' (paper-wide default/shared conditions not tied to one specific entity). If a fixed-variable field is still empty after checking 'Paper text', resolve it by LOOKUP ONLY (never infer or compute a new value):",
             "   a. Identify which entity the field belongs to: is it a property of a material/catalyst, of an oxidant, of a micropollutant, or is it a general paper-wide condition?",
             "   b. Identify WHICH specific entity of that type this figure/curve is about (e.g. which catalyst, which oxidant, which micropollutant) — only proceed if that entity is already clear from the figure/curve context; do not guess it.",
             "   c. Look up that exact entity by name in the matching array of 'Paper context' ('materials' / 'oxidants' / 'micropollutants'), or check 'generalConditions' directly if the field is a shared condition rather than tied to one entity.",
@@ -609,7 +612,7 @@ export async function POST(req: Request) {
             "Fields to extract (JSON):",
             JSON.stringify(fields, null, 2),
             "Paper text:",
-            clip(paperText, 15000),
+            clip(paperText, 60000),
             "Figure (JSON) — the specific figure/panel to extract values for, including its already-determined changingVariable and curveLabels:",
             JSON.stringify(figure, null, 2),
             "Digitization columns:",
@@ -625,7 +628,7 @@ export async function POST(req: Request) {
             // Đặt SAU 'Figure' (không đặt sớm hơn) vì đây cũng là phần thay đổi
             // theo call/context giống 'Figure', không ảnh hưởng tới cache prefix
             // ổn định của 'Fields' + 'Paper text' phía trên.
-            "Paper context (JSON) - reference table of materials/oxidants/micropollutants/generalConditions, built once from the whole paper. Use ONLY as fallback per rule 9 (lookup only, never infer):",
+            "Paper context (JSON) - reference table of materials/oxidants/micropollutants/generalConditions, built once from the whole paper. Use ONLY as fallback per rule 10 (lookup only, never infer):",
             paperContext
               ? JSON.stringify(paperContext, null, 2)
               : "(none provided)",

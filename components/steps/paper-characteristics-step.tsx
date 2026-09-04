@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Loader2,
   ScanSearch,
@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { useWorkflow } from "@/lib/workflow-context";
 import type {
   PaperCharacteristicMaterial,
+  PaperCharacteristicEntity,
   PaperCharacteristicsResult,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -27,6 +28,70 @@ function download(name: string, content: string, type: string) {
   a.download = name;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function EntitySection({
+  title,
+  icon,
+  entities,
+}: {
+  title: string;
+  icon: ReactNode;
+  entities: (PaperCharacteristicMaterial | PaperCharacteristicEntity)[];
+}) {
+  if (entities.length === 0) return null;
+  return (
+    <div>
+      <h2 className="mb-3 text-sm font-medium flex items-center gap-2">
+        {icon}
+        {title} ({entities.length})
+      </h2>
+      <div className="grid gap-3 md:grid-cols-2">
+        {entities.map((entity, i) => (
+          <div key={i} className="rounded-lg border border-border bg-card p-4">
+            <div className="mb-2 flex items-baseline gap-2">
+              <span className="text-sm font-semibold">{entity.name}</span>
+              {"role" in entity && entity.role && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {entity.role}
+                </Badge>
+              )}
+            </div>
+            {entity.values.length > 0 ? (
+              <div className="overflow-hidden rounded-md border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/60 text-left">
+                    <tr>
+                      <th className="px-3 py-1.5 font-medium">Property</th>
+                      <th className="px-3 py-1.5 font-medium">Value</th>
+                      <th className="px-3 py-1.5 font-medium">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entity.values.map((v, j) => (
+                      <tr key={j} className="border-t border-border">
+                        <td className="px-3 py-1 font-mono">{v.name}</td>
+                        <td className="px-3 py-1 font-medium">
+                          {v.value || "—"}
+                        </td>
+                        <td className="px-3 py-1 text-muted-foreground">
+                          {v.source || ""}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                No characteristics extracted
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function PaperCharacteristicsStep() {
@@ -61,7 +126,9 @@ export function PaperCharacteristicsStep() {
       if (!res.ok) throw new Error(data.error || "Trích xuất thất bại");
       const result: PaperCharacteristicsResult = {
         materials: data.materials ?? [],
-        generalConstants: data.generalConstants ?? [],
+        oxidants: data.oxidants ?? [],
+        micropollutants: data.micropollutants ?? [],
+        generalConditions: data.generalConditions ?? [],
         notes: data.notes ?? "",
       };
       setPaperCharacteristics(result);
@@ -131,72 +198,29 @@ export function PaperCharacteristicsStep() {
 
       {paperCharacteristics && (
         <div className="space-y-6">
-          {paperCharacteristics.materials.length > 0 && (
-            <div>
-              <h2 className="mb-3 text-sm font-medium flex items-center gap-2">
-                <FlaskConical className="size-4 text-primary" />
-                Vật liệu ({paperCharacteristics.materials.length})
-              </h2>
-              <div className="grid gap-3 md:grid-cols-2">
-                {paperCharacteristics.materials.map((mat, i) => (
-                  <div
-                    key={i}
-                    className="rounded-lg border border-border bg-card p-4"
-                  >
-                    <div className="mb-2 flex items-baseline gap-2">
-                      <span className="text-sm font-semibold">{mat.name}</span>
-                      {mat.role && (
-                        <Badge variant="secondary" className="text-[10px]">
-                          {mat.role}
-                        </Badge>
-                      )}
-                    </div>
-                    {mat.values.length > 0 && (
-                      <div className="overflow-hidden rounded-md border border-border">
-                        <table className="w-full text-xs">
-                          <thead className="bg-muted/60 text-left">
-                            <tr>
-                              <th className="px-3 py-1.5 font-medium">
-                                Property
-                              </th>
-                              <th className="px-3 py-1.5 font-medium">Value</th>
-                              <th className="px-3 py-1.5 font-medium">
-                                Source
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {mat.values.map((v, j) => (
-                              <tr key={j} className="border-t border-border">
-                                <td className="px-3 py-1 font-mono">
-                                  {v.name}
-                                </td>
-                                <td className="px-3 py-1 font-medium">
-                                  {v.value || "—"}
-                                </td>
-                                <td className="px-3 py-1 text-muted-foreground">
-                                  {v.source || ""}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                    {mat.values.length === 0 && (
-                      <p className="text-xs text-muted-foreground">
-                        No characteristics extracted
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <EntitySection
+            title="Vật liệu"
+            icon={<FlaskConical className="size-4 text-primary" />}
+            entities={paperCharacteristics.materials}
+          />
 
-          {paperCharacteristics.generalConstants.length > 0 && (
+          <EntitySection
+            title="Chất oxy hóa"
+            icon={<FlaskConical className="size-4 text-primary" />}
+            entities={paperCharacteristics.oxidants}
+          />
+
+          <EntitySection
+            title="Chất ô nhiễm"
+            icon={<FlaskConical className="size-4 text-primary" />}
+            entities={paperCharacteristics.micropollutants}
+          />
+
+          {paperCharacteristics.generalConditions.length > 0 && (
             <div>
-              <h2 className="mb-3 text-sm font-medium">General Constants</h2>
+              <h2 className="mb-3 text-sm font-medium">
+                Điều kiện chung (General Conditions)
+              </h2>
               <div className="overflow-hidden rounded-lg border border-border">
                 <table className="w-full text-xs">
                   <thead className="bg-muted/60 text-left">
@@ -207,7 +231,7 @@ export function PaperCharacteristicsStep() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paperCharacteristics.generalConstants.map((v, i) => (
+                    {paperCharacteristics.generalConditions.map((v, i) => (
                       <tr key={i} className="border-t border-border">
                         <td className="px-3 py-1 font-mono">{v.name}</td>
                         <td className="px-3 py-1 font-medium">

@@ -126,9 +126,16 @@ export interface PaperCharacteristicMaterial {
   values: FieldValue[];
 }
 
+export interface PaperCharacteristicEntity {
+  name: string;
+  values: FieldValue[];
+}
+
 export interface PaperCharacteristicsResult {
   materials: PaperCharacteristicMaterial[];
-  generalConstants: FieldValue[];
+  oxidants: PaperCharacteristicEntity[];
+  micropollutants: PaperCharacteristicEntity[];
+  generalConditions: FieldValue[];
   notes: string;
 }
 

@@ -123,7 +123,7 @@ export function FigureValuesStep() {
             yField: yField || undefined,
             seriesField: seriesField || undefined,
             paperText: paper.text,
-            materialsContext: paperCharacteristics,
+            paperContext: paperCharacteristics,
           }),
       });
       const contentType = res.headers.get("content-type");
@@ -147,7 +147,7 @@ const extractedValues = data.values as FieldValue[];
          values: sanitizedValues,
          curveLabels: data.curveLabels ?? [],
          changingVariable: data.changingVariable,
-         changingFieldNames: digitizationColumns,
+         changingFieldNames: data.changingFieldNames ?? digitizationColumns,
          notes: data.notes,
        };
       if (currentFigureId) {

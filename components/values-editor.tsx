@@ -49,13 +49,35 @@ export function ValuesEditor({ fields, values, onChange, seriesLabel }: ValuesEd
              {f.description && (
                <p className="mb-2 text-xs leading-relaxed text-muted-foreground">{f.description}</p>
              )}
-             <Input
-              id={`field-${f.name}`}
-              value={v?.value ?? ""}
-              placeholder={f.type === "number" ? "0" : "—"}
-              onChange={(e) => update(f.name, e.target.value)}
-              className={`font-mono text-sm ${!validation.valid ? "border-destructive" : ""}`}
-            />
+             {f.type === "select" && f.options && f.options.length > 0 ? (
+               <select
+                 id={`field-${f.name}`}
+                 value={v?.value ?? ""}
+                 onChange={(e) => update(f.name, e.target.value)}
+                 className={cn(
+                   "h-9 w-full rounded-md border border-input bg-background px-3 font-mono text-sm",
+                   !validation.valid && "border-destructive",
+                 )}
+               >
+                 <option value="">—</option>
+                 {v?.value && !f.options.includes(v.value) && (
+                   <option value={v.value}>{v.value} (không khớp option)</option>
+                 )}
+                 {f.options.map((opt) => (
+                   <option key={opt} value={opt}>
+                     {opt}
+                   </option>
+                 ))}
+               </select>
+             ) : (
+               <Input
+                id={`field-${f.name}`}
+                value={v?.value ?? ""}
+                placeholder={f.type === "number" ? "0" : "—"}
+                onChange={(e) => update(f.name, e.target.value)}
+                className={`font-mono text-sm ${!validation.valid ? "border-destructive" : ""}`}
+              />
+             )}
             {seriesLabel && v && (() => {
               const label = seriesLabel(v)
               return label ? (
