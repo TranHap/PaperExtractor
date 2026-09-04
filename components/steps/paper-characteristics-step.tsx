@@ -12,6 +12,7 @@ import {
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ProvenanceBadge } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import type {
   PaperCharacteristicMaterial,
@@ -64,6 +65,7 @@ function EntitySection({
                     <tr>
                       <th className="px-3 py-1.5 font-medium">Property</th>
                       <th className="px-3 py-1.5 font-medium">Value</th>
+                      <th className="px-3 py-1.5 font-medium">Status</th>
                       <th className="px-3 py-1.5 font-medium">Source</th>
                     </tr>
                   </thead>
@@ -73,9 +75,22 @@ function EntitySection({
                         <td className="px-3 py-1 font-mono">{v.name}</td>
                         <td className="px-3 py-1 font-medium">
                           {v.value || "—"}
+                          {v.originalValue && (
+                            <span className="ml-1 font-normal text-muted-foreground">
+                              (gốc: {v.originalValue})
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-1">
+                          <ProvenanceBadge provenance={v.provenance} />
                         </td>
                         <td className="px-3 py-1 text-muted-foreground">
                           {v.source || ""}
+                          {v.conversionNote && (
+                            <span className="block text-[10px] text-muted-foreground/80">
+                              {v.conversionNote}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -227,6 +242,7 @@ export function PaperCharacteristicsStep() {
                     <tr>
                       <th className="px-3 py-1.5 font-medium">Property</th>
                       <th className="px-3 py-1.5 font-medium">Value</th>
+                      <th className="px-3 py-1.5 font-medium">Status</th>
                       <th className="px-3 py-1.5 font-medium">Source</th>
                     </tr>
                   </thead>
@@ -236,6 +252,9 @@ export function PaperCharacteristicsStep() {
                         <td className="px-3 py-1 font-mono">{v.name}</td>
                         <td className="px-3 py-1 font-medium">
                           {v.value || "—"}
+                        </td>
+                        <td className="px-3 py-1">
+                          <ProvenanceBadge provenance={v.provenance} />
                         </td>
                         <td className="px-3 py-1 text-muted-foreground">
                           {v.source || ""}

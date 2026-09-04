@@ -12,6 +12,7 @@ import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScatterPreview } from "@/components/scatter-preview";
+import { ProvenanceBadge } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged, toCsv } from "@/lib/merge";
 import type { Dataset } from "@/lib/types";
@@ -90,12 +91,32 @@ export function DatasetStep() {
     const extraAxisNames = [xField, yField, seriesField].filter(
       (n): n is string => !!n && !baseNames.includes(n),
     );
-    const fieldNames = [...baseNames, ...extraAxisNames];
+    // Every real metadata field (not the x/y/series digitization columns,
+    // which have no FieldValue behind them) also gets a "[status]" column
+    // right after it, carrying the REPORTED/LOOKED-UP/DERIVED/NR audit trail
+    // (and the pre-conversion value inline, when a unit conversion happened)
+    // so the CSV alone documents where every number came from.
+    const columns: { name: string; header: string; isStatus?: boolean }[] = [];
+    for (const name of baseNames) {
+      columns.push({ name, header: name });
+      columns.push({ name, header: `${name} [status]`, isStatus: true });
+    }
+    for (const name of extraAxisNames) {
+      columns.push({ name, header: name });
+    }
 
-    const headers = fieldNames;
+    const headers = columns.map((c) => c.header);
 
     const rows = points.map((p) =>
-      fieldNames.map((name) => {
+      columns.map((col) => {
+        const { name } = col;
+        if (col.isStatus) {
+          const m = metaByName.get(name);
+          if (!m || !m.value?.trim()) return "";
+          const parts = [m.provenance ?? ""];
+          if (m.originalValue) parts.push(`orig: ${m.originalValue}`);
+          return parts.filter(Boolean).join("; ");
+        }
         if (name === xField) return p.x;
         if (name === yField) return p.y;
         if (name === seriesField) return p.series;
@@ -206,7 +227,17 @@ export function DatasetStep() {
                         </span>
                       ) : null}
                     </td>
-                    <td className="px-3 py-2 font-medium">{m.value}</td>
+                    <td className="px-3 py-2 font-medium">
+                      {m.value}
+                      {m.originalValue && (
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          (gốc: {m.originalValue})
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <ProvenanceBadge provenance={m.provenance} />
+                    </td>
                   </tr>
                 ))}
               </tbody>

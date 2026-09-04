@@ -19,15 +19,24 @@ export interface Schema {
 /** A single extracted value for a schema field */
 export interface FieldValue {
   name: string;
+  /** Standardized value (in the schema field's declared unit, if any) */
   value: string;
   confidence?: number;
   source?: string;
-  /** Extraction status: found = AI confirmed value exists, not_found = AI confirmed absence, ambiguous = uncertain */
-  status?: "found" | "not_found" | "ambiguous";
-  /** For enum fields: how closely the value matches an allowed option */
-  matchConfidence?: "exact" | "closest" | "none";
-  /** Whether the source quote was verified to fall within the target figure's context */
-  sourceVerified?: boolean;
+  /**
+   * How this value was established:
+   * reported = stated explicitly in the paper/figure; looked_up = not stated
+   * in the paper, filled from general chemistry knowledge (only allowed for
+   * universal physicochemical constants, never for paper-specific measured
+   * data); derived = computed (e.g. unit conversion) from a reported/looked_up
+   * value; not_applicable = the concept genuinely doesn't apply to this
+   * system (e.g. no catalyst used); not_reported = could not be established.
+   */
+  provenance?: "reported" | "looked_up" | "derived" | "not_applicable" | "not_reported";
+  /** Value + unit exactly as stated in the paper, only set when `value` is a converted/standardized form of it */
+  originalValue?: string;
+  /** How `value` was obtained from originalValue/looked-up knowledge: formula, exact chemical species, MW used, etc. */
+  conversionNote?: string;
   series?: string;
 }
 

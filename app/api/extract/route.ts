@@ -86,11 +86,28 @@ const fieldValueSchema = z.object({
   name: z.string().describe("The exact field name from the schema"),
   value: z
     .string()
-    .describe("Extracted value as a string, or empty string if not found"),
+    .describe(
+      "Standardized value as a string (converted to the field's declared unit if one is given), or empty string if not found. For an identity/category field that genuinely doesn't apply to this system, use 'None / Not applicable' instead of empty.",
+    ),
   confidence: z.number().min(0).max(1).describe("Confidence 0-1"),
   source: z
     .string()
     .describe("Short quote or location supporting the value, or empty string"),
+  provenance: z
+    .enum(["reported", "looked_up", "derived", "not_applicable", "not_reported"])
+    .describe(
+      "reported = stated explicitly in the paper; looked_up = not stated in the paper, filled from general chemistry knowledge (ONLY for universal physicochemical constants, never for the paper's own measured/experimental data); derived = computed from a reported/looked_up value (e.g. unit conversion); not_applicable = the concept genuinely doesn't apply to this system; not_reported = could not be established.",
+    ),
+  originalValue: z
+    .string()
+    .describe(
+      "Value + unit exactly as stated in the paper, ONLY set when 'value' is a converted/standardized form of it. Empty string otherwise.",
+    ),
+  conversionNote: z
+    .string()
+    .describe(
+      "How 'value' was obtained: formula used, exact chemical species and its MW, or the basis for a looked-up constant. Empty string when not applicable.",
+    ),
 });
 
 function clip(text: string, max = 90000) {
@@ -273,7 +290,7 @@ export async function POST(req: Request) {
                     values: z
                       .array(fieldValueSchema)
                       .describe(
-                        "EVERY characterization property reported for this specific material anywhere in the paper: BET surface area, pore volume, pHpzc, XRD 2Theta / d-spacing, particle/crystallite size, elemental composition (Cu/Mg/Al/C %), degradation rate constant, etc. Do not limit yourself to a fixed list — extract everything found and give each its own entry with a clear 'name'.",
+                        "One entry for EACH of these REQUIRED characterization properties — 'Support type', 'Size', 'SBET', 'Pore volume', 'Average pore size', 'pHpzc', '2Theta' — PLUS one entry for every OTHER characterization property reported for this material anywhere in the paper (elemental composition, crystallite size, rate constant, etc.). These are the material's own measured/experimental data: NEVER use provenance='looked_up' for any of them — if not reported, value='' and provenance='not_reported'.",
                       ),
                   }),
                 )
@@ -291,7 +308,7 @@ export async function POST(req: Request) {
                     values: z
                       .array(fieldValueSchema)
                       .describe(
-                        "EVERY physicochemical property reported for this oxidant anywhere in the paper: MW, pKa, O-O bond dissociation energy, standard reduction potential, etc. Be exhaustive — extract everything found and give each its own entry with a clear 'name'.",
+                        "One entry for EACH of these REQUIRED properties — 'Chemical formula/species', 'MW', 'O-O bond dissociation energy', 'Standard reduction potential' (name the relevant half-reaction), 'pKa' — PLUS any other physicochemical property reported for this oxidant. These are universal physicochemical constants: if not stated in the paper, you MAY use provenance='looked_up' from established chemistry knowledge for the EXACT chemical species involved (state that species in conversionNote). If the oxidant has no O-O bond, value='Not applicable' with provenance='not_applicable' for that entry.",
                       ),
                   }),
                 )
@@ -307,7 +324,7 @@ export async function POST(req: Request) {
                     values: z
                       .array(fieldValueSchema)
                       .describe(
-                        "EVERY physicochemical property reported for this micropollutant anywhere in the paper: MW, LogKow, E, S, A, B, V (Abraham solvation parameters), etc. Be exhaustive — extract everything found and give each its own entry with a clear 'name'.",
+                        "One entry for EACH of these REQUIRED properties — 'MW', 'LogKow', 'E', 'S', 'A', 'B', 'V' (Abraham solvation/LSER descriptors) — PLUS any other physicochemical property reported for this micropollutant. These are universal physicochemical constants: if not stated in the paper, you MAY use provenance='looked_up' from established chemistry/literature knowledge. Never invent E/S/A/B/V — if a reliable value cannot be established, value='' and provenance='not_reported'.",
                       ),
                   }),
                 )
@@ -334,13 +351,13 @@ export async function POST(req: Request) {
             "2. Identify every catalyst, support, and precursor by its exact name as used in the paper, and list it under 'materials'.",
             "3. Identify every oxidant used or mentioned in the paper, and list it under 'oxidants'.",
             "4. Identify every micropollutant / target pollutant studied in the paper, and list it under 'micropollutants'.",
-            "5. For every material, extract EVERY characterization property reported for it anywhere in the text: surface area (SBET), pore volume, pHpzc, XRD peak positions / 2Theta / d-spacing, particle or crystallite size, elemental composition (wt% or %), rate constants, activation energy, dosage used, etc. Be exhaustive — do not stop at the first property you find.",
-            "6. For every oxidant, extract EVERY physicochemical property reported for it anywhere in the text: MW, pKa, O-O bond dissociation energy, standard reduction potential, etc. Be exhaustive.",
-            "7. For every micropollutant, extract EVERY physicochemical property reported for it anywhere in the text: MW, LogKow, E, S, A, B, V, etc. Be exhaustive.",
-            "8. Extract all default/shared reaction conditions that apply broadly across the paper (not tied to one specific material/oxidant/micropollutant) into 'generalConditions', only if the text explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume).",
-            "9. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g').",
-            "10. If a property is mentioned only qualitatively (e.g. 'high surface area') without a number, skip it — only extract concrete values.",
-            "11. Do not invent or infer values that are not explicitly stated.",
+            "5. For every material, you MUST emit one entry for each REQUIRED property listed in the schema (Support type, Size, SBET, Pore volume, Average pore size, pHpzc, 2Theta) — never silently skip one just because it's absent, emit it with value='' and provenance='not_reported' instead. Plus extract every OTHER characterization property you find (elemental composition, rate constants, activation energy, dosage, etc.). These are all this material's OWN measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them; if the paper doesn't report a number, it stays empty/not_reported, no exceptions.",
+            "6. For every oxidant, you MUST emit one entry for each REQUIRED property (Chemical formula/species, MW, O-O bond dissociation energy, Standard reduction potential, pKa), plus any other physicochemical property found. These are universal physicochemical constants for the oxidant species itself (not measured by this paper's authors): if the paper doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species. If the oxidant has no O-O bond, report that property as value='Not applicable', provenance='not_applicable'.",
+            "7. For every micropollutant, you MUST emit one entry for each REQUIRED property (MW, LogKow, E, S, A, B, V), plus any other physicochemical property found. These are universal physicochemical constants: if the paper doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent Abraham descriptors (E/S/A/B/V) — if a reliable value isn't known, value='' and provenance='not_reported'.",
+            "8. Extract all default/shared reaction conditions that apply broadly across the paper (not tied to one specific material/oxidant/micropollutant) into 'generalConditions', only if the text explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume). These come from THIS paper only — provenance='reported', never looked_up.",
+            "9. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
+            "10. If a paper-specific property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
+            "11. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 6-7), and only when clearly labeled provenance='looked_up' with its basis stated.",
             "",
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "",
@@ -598,7 +615,10 @@ export async function POST(req: Request) {
             "   b. Identify WHICH specific entity of that type this figure/curve is about (e.g. which catalyst, which oxidant, which micropollutant) — only proceed if that entity is already clear from the figure/curve context; do not guess it.",
             "   c. Look up that exact entity by name in the matching array of 'Paper context' ('materials' / 'oxidants' / 'micropollutants'), or check 'generalConditions' directly if the field is a shared condition rather than tied to one entity.",
             "   d. Copy that entity's matching property value — match by meaning, not exact string (e.g. field 'SBET (catalyst)' matches a materials property named 'BET surface area'; field 'MW (oxidant)' matches an oxidants property named 'MW'; field 'LogKow' matches a micropollutants property of the same name).",
-            "   Set 'source' to mention it came from Paper context (e.g. 'Paper context: Cu-rGO LDH (materials), BET surface area'). Do NOT use a property belonging to a DIFFERENT entity than the one this figure/curve is about, and never invent a value that isn't explicitly present in 'Paper context' or 'Paper text'.",
+            "   Set 'source' to mention it came from Paper context (e.g. 'Paper context: Cu-rGO LDH (materials), BET surface area'). Do NOT use a property belonging to a DIFFERENT entity than the one this figure/curve is about, and never invent a value that isn't explicitly present in 'Paper context' or 'Paper text'. Copy the source entry's 'provenance' as-is (if it was 'looked_up' there, it stays 'looked_up' here — do not relabel it 'reported').",
+            "11. UNIT CONVERSION — each entry in 'Fields' may carry a 'unit' (the standardized unit this dataset wants). If the paper reports the same quantity in a DIFFERENT unit, you must: (a) put the paper's exact value+unit string in 'originalValue' (e.g. '0.5 g/L'), (b) compute the standardized value in the field's unit into 'value' (e.g. '4.42' for a field whose unit is 'mM'), (c) set provenance='derived', and (d) write the formula, the EXACT chemical species assumed, and the MW used into 'conversionNote' (e.g. 'PMS as HSO5-, MW 113.07 g/mol: 0.5 g/L / 113.07 g/mol x 1000 = 4.42 mM'). NEVER pick a molecular weight for a generic/commercial formulation name (e.g. 'PMS', 'Oxone') without first deciding the exact species intended — if genuinely ambiguous, still convert using the most standard interpretation but say so in 'conversionNote'. If the paper's unit already matches the field's unit, leave 'originalValue' empty and provenance='reported' (no conversion happened). NEVER silently overwrite the paper's original value without preserving it in 'originalValue'.",
+            "12. Some fields are IDENTITY fields naming which material/catalyst/oxidant/micropollutant/etc. is involved. When such a field genuinely does not apply to this figure's system (e.g. a 'Catalyst' field when this curve is an oxidant-only control with no catalyst), return value='None / Not applicable' and provenance='not_applicable' — this is different from 'could not determine', which is value='' with confidence=0 and provenance='not_reported'. Never leave an identity field as a bare empty string when the true answer is 'none used'.",
+            "13. PROVENANCE — every entry in 'values' must set 'provenance': 'reported' when the value came directly from this figure/paper text; 'derived' when computed via unit conversion (rule 11); 'not_applicable' when the concept doesn't apply (rule 12); 'not_reported' when it could not be determined; or the inherited value from rule 10 when resolved via Paper context fallback (which may itself be 'looked_up').",
             "",
 
             // IMPORTANT — prompt-caching order: OpenAI's automatic prompt caching

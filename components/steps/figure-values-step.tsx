@@ -139,7 +139,13 @@ const extractedValues = data.values as FieldValue[];
 
        const sanitizedValues = extractedValues.map((v) =>
          digitizationColumns.includes(v.name)
-           ? { ...v, value: "", confidence: 0, source: "digitization column — skipped" }
+           ? {
+               ...v,
+               value: "",
+               confidence: 0,
+               source: "digitization column — skipped",
+               provenance: "not_applicable" as const,
+             }
            : v,
        );
 

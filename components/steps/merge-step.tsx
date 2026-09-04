@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Badge } from "@/components/ui/badge";
+import { ProvenanceBadge } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged } from "@/lib/merge";
 
@@ -94,6 +95,7 @@ export function MergeStep() {
             <tr>
               <th className="px-4 py-2 font-medium">Field</th>
               <th className="px-4 py-2 font-medium">Giá trị</th>
+              <th className="px-4 py-2 font-medium">Status</th>
               <th className="px-4 py-2 font-medium">Nguồn</th>
             </tr>
           </thead>
@@ -123,6 +125,14 @@ export function MergeStep() {
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
+                    {m.originalValue && (
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        (gốc: {m.originalValue})
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <ProvenanceBadge provenance={m.provenance} />
                   </td>
                   <td className="px-4 py-2">
                     {columnRole || m.value?.trim() ? (

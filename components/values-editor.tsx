@@ -13,13 +13,66 @@ interface ValuesEditorProps {
   seriesLabel?: (value: FieldValue) => string | null
 }
 
+const PROVENANCE_META: Record<
+  NonNullable<FieldValue["provenance"]>,
+  { label: string; className: string }
+> = {
+  reported: {
+    label: "REPORTED",
+    className:
+      "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+  },
+  looked_up: {
+    label: "LOOKED-UP",
+    className: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  },
+  derived: {
+    label: "DERIVED",
+    className: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
+  },
+  not_applicable: {
+    label: "N/A",
+    className: "bg-muted text-muted-foreground",
+  },
+  not_reported: {
+    label: "NR",
+    className: "bg-destructive/10 text-destructive",
+  },
+}
+
+export function ProvenanceBadge({ provenance }: { provenance?: FieldValue["provenance"] }) {
+  if (!provenance) return null
+  const meta = PROVENANCE_META[provenance]
+  if (!meta) return null
+  return (
+    <span
+      className={cn(
+        "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+        meta.className,
+      )}
+    >
+      {meta.label}
+    </span>
+  )
+}
+
 export function ValuesEditor({ fields, values, onChange, seriesLabel }: ValuesEditorProps) {
   const byName = new Map(values.map((v) => [v.name, v]))
 
   function update(name: string, value: string) {
     const existing = byName.get(name)
+    // A manual edit replaces whatever the AI determined, so drop its
+    // provenance/original-value/conversion-note — they'd otherwise linger and
+    // describe a value that's no longer there.
     const next: FieldValue = existing
-      ? { ...existing, value, source: "edited by user" }
+      ? {
+          ...existing,
+          value,
+          source: "edited by user",
+          provenance: undefined,
+          originalValue: undefined,
+          conversionNote: undefined,
+        }
       : { name, value, confidence: 1, source: "edited by user" }
     const others = values.filter((v) => v.name !== name)
     onChange([...others, next])
@@ -87,17 +140,23 @@ export function ValuesEditor({ fields, values, onChange, seriesLabel }: ValuesEd
             {!validation.valid && (
               <p className="mt-1.5 text-xs text-destructive">{validation.error}</p>
             )}
+            {v?.originalValue && (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Giá trị gốc: <span className="font-mono">{v.originalValue}</span> → {v.value}
+              </p>
+            )}
             {v?.source && v.source !== "edited by user" && !validation.error && (
               <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                {v.source.startsWith("LLM:") && (
-                  <span className="rounded-full bg-teal-500/10 px-1.5 py-0.5 text-[10px] font-medium text-teal-600 dark:text-teal-400">
-                    LLM
-                  </span>
-                )}
+                <ProvenanceBadge provenance={v.provenance} />
                 <p className="line-clamp-2 text-xs italic text-muted-foreground">
                   "{v.source}"
                 </p>
               </div>
+            )}
+            {v?.conversionNote && (
+              <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground/80">
+                {v.conversionNote}
+              </p>
             )}
           </div>
         )
