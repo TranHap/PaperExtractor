@@ -347,7 +347,7 @@ export async function POST(req: Request) {
             "You are building a COMPLETE, structured reference context (paper context) for this scientific paper, covering four kinds of entities: materials, oxidants, micropollutants, and general reaction conditions.",
             "",
             "INSTRUCTIONS:",
-            "1. Scan the ENTIRE paper text: abstract, materials & methods, characterization, results & discussion, conclusion.",
+            "1. Scan the ENTIRE paper text: abstract, materials & methods, characterization, results & discussion, conclusion. The text may also contain a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) after the main paper — treat it with EQUAL weight, not as an appendix to skim: SI commonly holds exactly the characterization values (SBET, pHpzc, oxidant MW, LogKow...) this task needs.",
             "2. Identify every catalyst, support, and precursor by its exact name as used in the paper, and list it under 'materials'.",
             "3. Identify every oxidant used or mentioned in the paper, and list it under 'oxidants'.",
             "4. Identify every micropollutant / target pollutant studied in the paper, and list it under 'micropollutants'.",
@@ -362,7 +362,7 @@ export async function POST(req: Request) {
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "",
             "Paper text:",
-            clip(paperText, 60000),
+            clip(paperText, 150000),
           ].join("\n\n"),
         });
 
@@ -632,7 +632,7 @@ export async function POST(req: Request) {
             "Fields to extract (JSON):",
             JSON.stringify(fields, null, 2),
             "Paper text:",
-            clip(paperText, 60000),
+            clip(paperText, 150000),
             "Figure (JSON) — the specific figure/panel to extract values for, including its already-determined changingVariable and curveLabels:",
             JSON.stringify(figure, null, 2),
             "Digitization columns:",
@@ -658,7 +658,7 @@ export async function POST(req: Request) {
         // Debug: confirm whether key characterization terms actually made it
         // into the text sent to the model (not just into the raw paperText).
         {
-          const sentText = clip(paperText, 60000);
+          const sentText = clip(paperText, 150000);
           const checks = ["BET surface area", "pHpzc", "2θ", "2Theta"];
           console.log(
             "[debug figure_extract] paperText.length =",

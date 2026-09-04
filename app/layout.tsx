@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "FigExtract",
   description:
-    "Pipeline trích xuất dữ liệu có cấu trúc từ paper khoa học: schema, parse PDF, experiment context, số hóa figure và xuất dataset — chạy bằng ChatGPT.",
+    "Pipeline trích xuất dữ liệu có cấu trúc từ paper khoa học (kèm supplementary): schema, parse PDF, đặc tính vật liệu, số hóa figure và xuất dataset tổng hợp — chạy bằng ChatGPT.",
   generator: "v0.app",
 };
 

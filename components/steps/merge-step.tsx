@@ -15,7 +15,6 @@ import { buildMerged } from "@/lib/merge";
 export function MergeStep() {
   const {
     schema,
-    experiment,
     resolvedContext,
     figureContext,
     digitization,
@@ -27,14 +26,14 @@ export function MergeStep() {
     goNext,
   } = useWorkflow();
 
-  const base = resolvedContext ?? experiment?.values ?? [];
+  const base = resolvedContext ?? [];
   const merged = buildMerged(schema, base, figureContext?.values ?? []);
   const filled = merged.filter((m) => m.value?.trim());
 
   const sources = [
     {
       icon: FlaskConical,
-      title: "Experiment Context",
+      title: "Fill Values",
       count: base.filter((v) => v.value?.trim()).length,
       label: "field shared",
     },
@@ -57,8 +56,8 @@ export function MergeStep() {
     <StepShell
       step={7}
       total={8}
-      title="Review & Export"
-      description="Hợp nhất Experiment Context, Figure Context và các điểm đã số hóa thành một bản ghi hoàn chỉnh. Field figure chỉ điền vào chỗ mà experiment còn trống."
+      title="Review"
+      description="Hợp nhất giá trị đã điền (Fill Values), Figure Context và các điểm đã số hóa của figure này thành một bản ghi hoàn chỉnh trước khi gộp vào dataset chung của paper."
       onBack={goBack}
       onNext={goNext}
       nextLabel="Tạo Dataset"
@@ -146,7 +145,7 @@ export function MergeStep() {
                               : "border-primary/40 text-primary"
                         }
                       >
-                        {columnRole ?? (fromFigure ? "figure" : "experiment")}
+                        {columnRole ?? (fromFigure ? "figure" : "fill values")}
                       </Badge>
                     ) : null}
                   </td>

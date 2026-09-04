@@ -165,3 +165,39 @@ export async function parsePdf(
     pageImages,
   };
 }
+
+/**
+ * Combines a main paper with any number of supplementary documents (SI PDFs)
+ * into one ParsedPaper. Required characterization values (SBET, pHpzc,
+ * oxidant MW, LogKow...) routinely live in SI rather than the main text, so
+ * every downstream extraction call needs to see both — this is the only
+ * place that needs to know about "supplementary" as a concept; everything
+ * downstream just keeps working with a single ParsedPaper/paperText.
+ */
+export function mergeParsedPapers(
+  main: ParsedPaper,
+  supplements: ParsedPaper[],
+): ParsedPaper {
+  if (supplements.length === 0) return main;
+
+  let text = main.text;
+  let pages = main.pages;
+  const pageTexts = [...main.pageTexts];
+  const pageImages = [...main.pageImages];
+
+  for (const sup of supplements) {
+    text += `\n\n===== SUPPLEMENTARY INFORMATION (${sup.fileName}) =====\n\n${sup.text}`;
+    pages += sup.pages;
+    pageTexts.push(...sup.pageTexts);
+    pageImages.push(...sup.pageImages);
+  }
+
+  return {
+    fileName: main.fileName,
+    title: main.title,
+    text,
+    pages,
+    pageTexts,
+    pageImages,
+  };
+}

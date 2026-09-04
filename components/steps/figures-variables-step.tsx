@@ -16,7 +16,7 @@ export function FiguresVariablesStep() {
     setFigures,
     selectedFigure,
     setSelectedFigure,
-    exportedFigureIds,
+    digitizationByFigure,
     goBack,
     goNext,
   } = useWorkflow();
@@ -99,7 +99,7 @@ export function FiguresVariablesStep() {
         <div className="grid gap-3 md:grid-cols-2">
           {figures.map((f) => {
             const active = selectedFigure?.id === f.id;
-            const exported = exportedFigureIds.includes(f.id);
+            const digitized = (digitizationByFigure[f.id]?.points.length ?? 0) > 0;
             return (
               <button
                 key={f.id}
@@ -108,23 +108,21 @@ export function FiguresVariablesStep() {
                 className={cn(
                   "flex flex-col gap-2 rounded-lg border p-4 text-left transition-colors",
                   active
-                    ? exported
-                      ? "border-destructive bg-destructive/5 ring-1 ring-destructive"
-                      : "border-primary bg-primary/5 ring-1 ring-primary"
-                    : exported
-                      ? "border-destructive/60 bg-destructive/5 hover:border-destructive"
+                    ? "border-primary bg-primary/5 ring-1 ring-primary"
+                    : digitized
+                      ? "border-chart-2/60 bg-chart-2/5 hover:border-chart-2"
                       : "border-border bg-card hover:border-primary/40",
                 )}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-semibold">{f.label}</span>
                   <div className="flex items-center gap-1.5">
-                    {exported && (
-                      <span className="flex items-center gap-1 text-xs font-medium text-destructive">
-                        <Check className="size-3.5" /> Đã xuất
+                    {digitized && (
+                      <span className="flex items-center gap-1 text-xs font-medium text-chart-2">
+                        <Check className="size-3.5" /> Đã số hóa
                       </span>
                     )}
-                    {active && !exported && (
+                    {active && !digitized && (
                       <span className="flex items-center gap-1 text-xs font-medium text-primary">
                         <Check className="size-3.5" /> Đã chọn
                       </span>

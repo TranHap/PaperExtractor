@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   Download,
   FileJson,
@@ -7,15 +8,16 @@ import {
   RotateCcw,
   Database,
   Check,
+  ArrowRightCircle,
+  PartyPopper,
 } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScatterPreview } from "@/components/scatter-preview";
-import { ProvenanceBadge } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged, toCsv } from "@/lib/merge";
-import type { Dataset } from "@/lib/types";
+import type { Dataset, DigitizedPoint, FieldValue, FigureItem, PaperDataset } from "@/lib/types";
 
 function toShortName(title: string): string {
   const slug = title
@@ -37,116 +39,175 @@ function download(name: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
+interface FigureBuild {
+  figure: FigureItem;
+  rawMerged: FieldValue[];
+  dataset: Dataset;
+}
+
 export function DatasetStep() {
   const {
     schema,
     paper,
-    experiment,
-    resolvedContext,
-    figureContext,
-    digitization,
-    selectedFigure,
+    figures,
+    digitizationByFigure,
+    resolvedContextByFigure,
+    figureContextByFigure,
     xField,
     yField,
     seriesField,
     goBack,
     reset,
-    setExportedFigureIds,
-    exportedFigureIds,
+    setSelectedFigure,
+    setCurrentStep,
   } = useWorkflow();
 
-  const base = resolvedContext ?? experiment?.values ?? [];
-  const rawMerged = buildMerged(schema, base, figureContext?.values ?? []);
-  const merged = rawMerged.filter((m) => m.value?.trim());
-  const points = digitization?.points ?? [];
+  const completedFigures = useMemo(
+    () =>
+      figures.filter(
+        (f) => (digitizationByFigure[f.id]?.points.length ?? 0) > 0,
+      ),
+    [figures, digitizationByFigure],
+  );
 
-  const dataset: Dataset = {
-    schemaName: schema?.name ?? "dataset",
-    paperTitle: paper?.title,
-    figure: selectedFigure,
-    merged,
-    points,
-    xField: xField || undefined,
-    yField: yField || undefined,
-    seriesField: seriesField || undefined,
-    generatedAt: new Date().toISOString(),
-  };
+  const built: FigureBuild[] = useMemo(
+    () =>
+      completedFigures.map((figure) => {
+        const digit = digitizationByFigure[figure.id];
+        const base = resolvedContextByFigure[figure.id] ?? [];
+        const figCtx = figureContextByFigure[figure.id];
+        const rawMerged = buildMerged(schema, base, figCtx?.values ?? []);
+        const merged = rawMerged.filter((m) => m.value?.trim());
+        const points = digit?.points ?? [];
+        const dataset: Dataset = {
+          schemaName: schema?.name ?? "dataset",
+          paperTitle: paper?.title,
+          figure,
+          merged,
+          points,
+          xField: xField || undefined,
+          yField: yField || undefined,
+          seriesField: seriesField || undefined,
+          generatedAt: new Date().toISOString(),
+        };
+        return { figure, rawMerged, dataset };
+      }),
+    [
+      completedFigures,
+      digitizationByFigure,
+      resolvedContextByFigure,
+      figureContextByFigure,
+      schema,
+      paper,
+      xField,
+      yField,
+      seriesField,
+    ],
+  );
+
+  const baseNames = useMemo(() => {
+    const schemaOrder = schema?.fields.map((f) => f.name) ?? [];
+    const extra: string[] = [];
+    for (const b of built) {
+      for (const m of b.rawMerged) {
+        if (!schemaOrder.includes(m.name) && !extra.includes(m.name)) {
+          extra.push(m.name);
+        }
+      }
+    }
+    return [...schemaOrder, ...extra];
+  }, [built, schema]);
+
+  const totalPoints = built.reduce((sum, b) => sum + b.dataset.points.length, 0);
+  const pendingFigure = figures.find(
+    (f) => (digitizationByFigure[f.id]?.points.length ?? 0) === 0,
+  );
+
+  const paperLabel = paper?.title || paper?.fileName || schema?.name || "paper";
+  const paperShort = toShortName(paperLabel);
+  const schemaSlug = (schema?.name ?? "dataset").replace(/\s+/g, "_");
 
   function exportJson() {
+    const paperDataset: PaperDataset = {
+      schemaName: schema?.name ?? "dataset",
+      paperTitle: paper?.title,
+      generatedAt: new Date().toISOString(),
+      figures: built.map((b) => b.dataset),
+    };
     download(
-      `${dataset.schemaName.replace(/\s+/g, "_")}_dataset.json`,
-      JSON.stringify(dataset, null, 2),
+      `[${paperShort}] ${schemaSlug}_dataset.json`,
+      JSON.stringify(paperDataset, null, 2),
       "application/json",
     );
   }
 
   function exportCsv() {
-    // rawMerged is already ordered to match schema.fields (buildMerged takes
-    // care of that, and keeps fields with no value). x/y/series are just
-    // schema fields whose value comes from the digitized point instead of
-    // from experiment/figure context, so we slot them in at their real
-    // schema position rather than pinning them to the front.
-    const metaByName = new Map(rawMerged.map((m) => [m.name, m]));
-    const baseNames = rawMerged.map((m) => m.name);
-    const extraAxisNames = [xField, yField, seriesField].filter(
-      (n): n is string => !!n && !baseNames.includes(n),
-    );
-    // Every real metadata field (not the x/y/series digitization columns,
-    // which have no FieldValue behind them) also gets a "[status]" column
-    // right after it, carrying the REPORTED/LOOKED-UP/DERIVED/NR audit trail
-    // (and the pre-conversion value inline, when a unit conversion happened)
-    // so the CSV alone documents where every number came from.
     const columns: { name: string; header: string; isStatus?: boolean }[] = [];
     for (const name of baseNames) {
       columns.push({ name, header: name });
       columns.push({ name, header: `${name} [status]`, isStatus: true });
     }
-    for (const name of extraAxisNames) {
-      columns.push({ name, header: name });
+    const extraAxisNames = [xField, yField, seriesField].filter(
+      (n): n is string => !!n && !baseNames.includes(n),
+    );
+    for (const name of extraAxisNames) columns.push({ name, header: name });
+
+    const headers = ["Source", ...columns.map((c) => c.header)];
+
+    const rows: (string | number)[][] = [];
+    for (const b of built) {
+      const metaByName = new Map(b.rawMerged.map((m) => [m.name, m]));
+      const source = `${paperLabel} (${b.figure.label})`;
+      for (const p of b.dataset.points) {
+        const row = columns.map((col) => {
+          const { name } = col;
+          if (col.isStatus) {
+            const m = metaByName.get(name);
+            if (!m || !m.value?.trim()) return "";
+            const parts = [m.provenance ?? ""];
+            if (m.originalValue) parts.push(`orig: ${m.originalValue}`);
+            return parts.filter(Boolean).join("; ");
+          }
+          if (name === xField) return p.x;
+          if (name === yField) return p.y;
+          if (name === seriesField) return p.series;
+          const m = metaByName.get(name);
+          if (!m) return "";
+          if (m.series) return m.series === p.series ? m.value : "";
+          return m.value;
+        });
+        rows.push([source, ...row]);
+      }
     }
 
-    const headers = columns.map((c) => c.header);
-
-    const rows = points.map((p) =>
-      columns.map((col) => {
-        const { name } = col;
-        if (col.isStatus) {
-          const m = metaByName.get(name);
-          if (!m || !m.value?.trim()) return "";
-          const parts = [m.provenance ?? ""];
-          if (m.originalValue) parts.push(`orig: ${m.originalValue}`);
-          return parts.filter(Boolean).join("; ");
-        }
-        if (name === xField) return p.x;
-        if (name === yField) return p.y;
-        if (name === seriesField) return p.series;
-        const m = metaByName.get(name);
-        if (!m) return "";
-        if (m.series) {
-          return m.series === p.series ? m.value : "";
-        }
-        return m.value;
-      }),
-    );
-
-    const paperShort = paper?.title
-      ? toShortName(paper.title)
-      : dataset.schemaName.replace(/\s+/g, "_");
-    const figureName = selectedFigure?.label
-      ? selectedFigure.label.replace(/\s+/g, "_")
-      : "figure";
     download(
-      `[${paperShort}] ${figureName}_points.csv`,
+      `[${paperShort}] ${schemaSlug}_dataset.csv`,
       toCsv(headers, rows),
       "text/csv",
     );
-    if (selectedFigure?.id) {
-      const currentIds = exportedFigureIds ?? [];
-      setExportedFigureIds(
-        currentIds.includes(selectedFigure.id)
-          ? currentIds
-          : [...currentIds, selectedFigure.id],
-      );
+  }
+
+  function goToNextFigure() {
+    if (!pendingFigure) return;
+    setSelectedFigure(pendingFigure);
+    setCurrentStep("digitize");
+  }
+
+  function reviewFigure(figure: FigureItem) {
+    setSelectedFigure(figure);
+    setCurrentStep("merge");
+  }
+
+  // Combined preview: relabel series per-figure so two figures' "Series 1"
+  // don't visually merge into one color/legend entry — export values above
+  // are untouched, this is display-only.
+  const combinedPoints: DigitizedPoint[] = [];
+  const combinedSeries: string[] = [];
+  for (const b of built) {
+    for (const p of b.dataset.points) {
+      const label = `${b.figure.label} · ${p.series}`;
+      combinedPoints.push({ ...p, series: label });
+      if (!combinedSeries.includes(label)) combinedSeries.push(label);
     }
   }
 
@@ -155,7 +216,7 @@ export function DatasetStep() {
       step={8}
       total={8}
       title="Dataset"
-      description="Kết quả cuối cùng: metadata hợp nhất gắn với từng điểm dữ liệu đã số hóa. Tải về dưới dạng JSON (đầy đủ ngữ cảnh) hoặc CSV (mỗi dòng là một điểm kèm metadata)."
+      description="Toàn bộ figure đã số hóa của paper này, gộp thành một dataset duy nhất. Tải về JSON (đầy đủ ngữ cảnh từng figure) hoặc CSV (mỗi dòng là một điểm, kèm cột Source xác định paper + figure)."
       onBack={goBack}
       hideNext
     >
@@ -165,78 +226,95 @@ export function DatasetStep() {
             <Database className="size-5 text-primary" />
           </div>
           <div>
-            <p className="text-sm font-semibold">{dataset.schemaName}</p>
-            <p className="text-xs text-muted-foreground">
-              {dataset.paperTitle ? dataset.paperTitle : "Untitled paper"}
-            </p>
+            <p className="text-sm font-semibold">{schema?.name ?? "dataset"}</p>
+            <p className="text-xs text-muted-foreground">{paperLabel}</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
-              {selectedFigure && (
-                <Badge variant="secondary">{selectedFigure.label}</Badge>
-              )}
-              <Badge
-                variant="outline"
-                className="border-primary/40 text-primary"
-              >
-                {merged.length} field
+              <Badge variant="outline" className="border-primary/40 text-primary">
+                {completedFigures.length}/{figures.length} figure
               </Badge>
-              <Badge
-                variant="outline"
-                className="border-chart-2/40 text-chart-2"
-              >
-                {points.length} điểm
+              <Badge variant="outline" className="border-chart-2/40 text-chart-2">
+                {totalPoints} điểm
               </Badge>
             </div>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={exportJson} variant="outline">
+          <Button onClick={exportJson} variant="outline" disabled={!built.length}>
             <FileJson className="size-4" />
             JSON
           </Button>
-          <Button onClick={exportCsv} disabled={!points.length}>
+          <Button onClick={exportCsv} disabled={!totalPoints}>
             <Sheet className="size-4" />
-            CSV
+            CSV toàn bộ
             <Download className="size-4" />
           </Button>
         </div>
       </div>
 
-      {points.length > 0 && (
-        <div className="mb-6">
-          <h2 className="mb-3 text-sm font-medium">Xem trước dữ liệu</h2>
-          <ScatterPreview points={points} series={digitization?.series ?? []} />
-        </div>
-      )}
+      <div className="mb-6 flex items-center justify-between gap-3 rounded-lg border border-dashed border-border p-4">
+        {pendingFigure ? (
+          <>
+            <p className="text-sm text-muted-foreground">
+              Còn {figures.length - completedFigures.length} figure chưa số
+              hóa. Tiếp theo:{" "}
+              <span className="font-medium text-foreground">
+                {pendingFigure.label}
+              </span>
+            </p>
+            <Button onClick={goToNextFigure}>
+              <ArrowRightCircle className="size-4" />
+              Xử lý figure tiếp theo
+            </Button>
+          </>
+        ) : figures.length > 0 ? (
+          <p className="flex items-center gap-2 text-sm text-primary">
+            <PartyPopper className="size-4" />
+            Đã số hóa hết {figures.length}/{figures.length} figure của paper
+            này.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Chưa quét figure nào — quay lại bước "Figures & Variables".
+          </p>
+        )}
+      </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div>
-          <h2 className="mb-3 text-sm font-medium">Metadata hợp nhất</h2>
+      {built.length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-3 text-sm font-medium">Các figure đã gộp</h2>
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
+              <thead className="bg-muted/60 text-left">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Figure</th>
+                  <th className="px-4 py-2 font-medium">Điểm</th>
+                  <th className="px-4 py-2 font-medium">Field có giá trị</th>
+                  <th className="px-4 py-2" />
+                </tr>
+              </thead>
               <tbody>
-                {merged.map((m) => (
-                  <tr
-                    key={`${m.name}-${m.series ?? "global"}`}
-                    className="border-b border-border last:border-0"
-                  >
-                    <td className="w-1/2 bg-muted/40 px-3 py-2 font-mono text-xs">
-                      {m.name}
-                      {m.series ? (
-                        <span className="ml-1 text-muted-foreground">
-                          ({m.series})
-                        </span>
-                      ) : null}
+                {built.map((b) => (
+                  <tr key={b.figure.id} className="border-t border-border">
+                    <td className="px-4 py-2 font-medium">
+                      <span className="mr-1.5 inline-flex items-center gap-1 text-primary">
+                        <Check className="size-3.5" />
+                      </span>
+                      {b.figure.label}
                     </td>
-                    <td className="px-3 py-2 font-medium">
-                      {m.value}
-                      {m.originalValue && (
-                        <span className="ml-1 text-xs text-muted-foreground">
-                          (gốc: {m.originalValue})
-                        </span>
-                      )}
+                    <td className="px-4 py-2 tabular-nums">
+                      {b.dataset.points.length}
                     </td>
-                    <td className="px-3 py-2">
-                      <ProvenanceBadge provenance={m.provenance} />
+                    <td className="px-4 py-2 tabular-nums">
+                      {b.dataset.merged.length}
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => reviewFigure(b.figure)}
+                      >
+                        Xem lại
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -244,15 +322,25 @@ export function DatasetStep() {
             </table>
           </div>
         </div>
+      )}
 
+      {combinedPoints.length > 0 && (
+        <div className="mb-6">
+          <h2 className="mb-3 text-sm font-medium">Xem trước dữ liệu (toàn bộ paper)</h2>
+          <ScatterPreview points={combinedPoints} series={combinedSeries} />
+        </div>
+      )}
+
+      {combinedPoints.length > 0 && (
         <div>
           <h2 className="mb-3 text-sm font-medium">
-            Điểm dữ liệu ({points.length})
+            Điểm dữ liệu ({combinedPoints.length})
           </h2>
           <div className="max-h-[360px] overflow-auto rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-muted/80 text-left backdrop-blur">
                 <tr>
+                  <th className="px-3 py-2 font-medium">Figure</th>
                   <th className="px-3 py-2 font-medium">
                     {seriesField || "Series"}
                   </th>
@@ -261,22 +349,27 @@ export function DatasetStep() {
                 </tr>
               </thead>
               <tbody>
-                {points.map((p, i) => (
-                  <tr key={i} className="border-t border-border">
-                    <td className="px-3 py-1.5">{p.series}</td>
-                    <td className="px-3 py-1.5 font-mono tabular-nums">
-                      {p.x.toPrecision(4)}
-                    </td>
-                    <td className="px-3 py-1.5 font-mono tabular-nums">
-                      {p.y.toPrecision(4)}
-                    </td>
-                  </tr>
-                ))}
+                {built.flatMap((b) =>
+                  b.dataset.points.map((p, i) => (
+                    <tr key={`${b.figure.id}-${i}`} className="border-t border-border">
+                      <td className="px-3 py-1.5 text-xs text-muted-foreground">
+                        {b.figure.label}
+                      </td>
+                      <td className="px-3 py-1.5">{p.series}</td>
+                      <td className="px-3 py-1.5 font-mono tabular-nums">
+                        {p.x.toPrecision(4)}
+                      </td>
+                      <td className="px-3 py-1.5 font-mono tabular-nums">
+                        {p.y.toPrecision(4)}
+                      </td>
+                    </tr>
+                  )),
+                )}
               </tbody>
             </table>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="mt-8 flex justify-center">
         <Button variant="ghost" onClick={reset}>

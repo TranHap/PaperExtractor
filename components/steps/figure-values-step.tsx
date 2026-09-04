@@ -13,7 +13,6 @@ export function FigureValuesStep() {
   const {
     schema,
     paper,
-    experiment,
     selectedFigure,
     resolvedContext,
     setResolvedContext,
@@ -38,10 +37,7 @@ export function FigureValuesStep() {
   const allFields = schema?.fields ?? [];
   const currentFigureId = selectedFigure?.id ?? null;
 
-  const baseValues = useMemo(
-    () => resolvedContext ?? experiment?.values ?? [],
-    [resolvedContext, experiment?.values],
-  );
+  const baseValues = useMemo(() => resolvedContext ?? [], [resolvedContext]);
 
   const changingFieldNames = useMemo(() => {
     if (!currentFigureId) return new Set<string>();

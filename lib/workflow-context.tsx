@@ -4,7 +4,6 @@ import type React from "react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Digitization,
-  type ExperimentContext,
   type FieldValue,
   type FigureContext,
   type FigureItem,
@@ -49,9 +48,6 @@ interface WorkflowState {
   paper: ParsedPaper | null;
   setPaper: (p: ParsedPaper | null) => void;
 
-  experiment: ExperimentContext | null;
-  setExperiment: (e: ExperimentContext | null) => void;
-
   figures: FigureItem[];
   setFigures: (f: FigureItem[]) => void;
 
@@ -76,15 +72,6 @@ interface WorkflowState {
   figureContextByFigure: Record<string, FigureContext>;
   setFigureContextByFigure: (c: Record<string, FigureContext>) => void;
 
-  imageParamsContext: FieldValue[] | null;
-  setImageParamsContext: (v: FieldValue[] | null) => void;
-
-  imageParamsContextByFigure: Record<string, FieldValue[]>;
-  setImageParamsContextByFigure: (v: Record<string, FieldValue[]>) => void;
-
-  exportedFigureIds: string[];
-  setExportedFigureIds: (ids: string[]) => void;
-
   paperCharacteristics: PaperCharacteristicsResult | null;
   setPaperCharacteristics: (v: PaperCharacteristicsResult | null) => void;
 }
@@ -93,7 +80,7 @@ const Ctx = createContext<WorkflowState | null>(null);
 
 const ORDER = STEPS.map((s) => s.id);
 
-const STORAGE_KEY = "sde:workflow-state-v1";
+const STORAGE_KEY = "sde:workflow-state-v2";
 
 type PersistedState = {
   currentStep: StepId;
@@ -103,7 +90,6 @@ type PersistedState = {
   yField: string;
   seriesField: string;
   paper: ParsedPaper | null;
-  experiment: ExperimentContext | null;
   figures: FigureItem[];
   selectedFigure: FigureItem | null;
   resolvedContext: FieldValue[] | null;
@@ -112,9 +98,6 @@ type PersistedState = {
   digitizationByFigure: Record<string, Digitization>;
   figureContext: FigureContext | null;
   figureContextByFigure: Record<string, FigureContext>;
-  imageParamsContext: FieldValue[] | null;
-  imageParamsContextByFigure: Record<string, FieldValue[]>;
-  exportedFigureIds: string[];
   paperCharacteristics: PaperCharacteristicsResult | null;
 };
 
@@ -155,10 +138,12 @@ function persist(state: PersistedState) {
 
 export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const hydrated = useRef(false);
-  const previousPaperFile = useRef<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-
   const initial = loadPersisted();
+  // Seeded from the persisted paper (if any) so the restore effect below
+  // doesn't mistake "reloading with a paper already loaded" for "a new
+  // paper was just uploaded" and wipe every figure's digitized work.
+  const previousPaperFile = useRef<string | null>(initial?.paper?.fileName ?? null);
+  const [loaded, setLoaded] = useState(false);
 
   const [currentStep, setCurrentStep] = useState<StepId>("schema");
   const [schema, setSchema] = useState<Schema | null>(null);
@@ -167,7 +152,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const [yField, setYField] = useState("");
   const [seriesField, setSeriesField] = useState("");
   const [paper, setPaper] = useState<ParsedPaper | null>(null);
-  const [experiment, setExperiment] = useState<ExperimentContext | null>(null);
   const [figures, setFigures] = useState<FigureItem[]>([]);
   const [selectedFigure, setSelectedFigure] = useState<FigureItem | null>(null);
   const [resolvedContext, setResolvedContext] = useState<FieldValue[] | null>(null);
@@ -176,9 +160,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const [digitizationByFigure, setDigitizationByFigure] = useState<Record<string, Digitization>>({});
   const [figureContext, setFigureContext] = useState<FigureContext | null>(null);
   const [figureContextByFigure, setFigureContextByFigure] = useState<Record<string, FigureContext>>({});
-  const [imageParamsContext, setImageParamsContext] = useState<FieldValue[] | null>(null);
-  const [imageParamsContextByFigure, setImageParamsContextByFigure] = useState<Record<string, FieldValue[]>>({});
-  const [exportedFigureIds, setExportedFigureIds] = useState<string[]>([]);
   const [paperCharacteristics, setPaperCharacteristics] = useState<PaperCharacteristicsResult | null>(null);
 
   useEffect(() => {
@@ -190,7 +171,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setYField(initial.yField ?? "");
       setSeriesField(initial.seriesField ?? "");
       setPaper(initial.paper ?? null);
-      setExperiment(initial.experiment ?? null);
       setFigures(initial.figures ?? []);
       setSelectedFigure(initial.selectedFigure ?? null);
       setResolvedContext(initial.resolvedContext ?? null);
@@ -199,9 +179,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setDigitizationByFigure(initial.digitizationByFigure ?? {});
       setFigureContext(initial.figureContext ?? null);
       setFigureContextByFigure(initial.figureContextByFigure ?? {});
-      setImageParamsContext(initial.imageParamsContext ?? null);
-      setImageParamsContextByFigure(initial.imageParamsContextByFigure ?? {});
-      setExportedFigureIds(initial.exportedFigureIds ?? []);
       setPaperCharacteristics(initial.paperCharacteristics ?? null);
       setLoaded(true);
     }
@@ -209,13 +186,15 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!hydrated.current) {
+      // First commit: state is still the pre-restore defaults (the load
+      // effect above hasn't applied yet). previousPaperFile is already
+      // seeded from persisted state at ref-init time — don't clobber it
+      // with the default (null) `paper` here.
       hydrated.current = true;
-      previousPaperFile.current = paper?.fileName ?? null;
       return;
     }
     if (paper?.fileName && paper.fileName !== previousPaperFile.current) {
       previousPaperFile.current = paper.fileName;
-      setExperiment(null);
       setFigures([]);
       setSelectedFigure(null);
       setVariableFields([]);
@@ -225,7 +204,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setDigitizationByFigure({});
       setFigureContext(null);
       setFigureContextByFigure({});
-      setExportedFigureIds([]);
       setPaperCharacteristics(null);
     }
     persist({
@@ -236,7 +214,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       yField,
       seriesField,
       paper,
-      experiment,
       figures,
       selectedFigure,
       resolvedContext,
@@ -245,9 +222,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       digitizationByFigure,
       figureContext,
       figureContextByFigure,
-      imageParamsContext,
-      imageParamsContextByFigure,
-      exportedFigureIds,
       paperCharacteristics,
     });
   }, [
@@ -259,7 +233,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     yField,
     seriesField,
     paper,
-    experiment,
     figures,
     selectedFigure,
     resolvedContext,
@@ -268,9 +241,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     digitizationByFigure,
     figureContext,
     figureContextByFigure,
-    imageParamsContext,
-    imageParamsContextByFigure,
-    exportedFigureIds,
     paperCharacteristics,
   ]);
 
@@ -290,7 +260,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setYField("");
       setSeriesField("");
       setPaper(null);
-      setExperiment(null);
       setFigures([]);
       setSelectedFigure(null);
       setResolvedContext(null);
@@ -299,9 +268,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setDigitizationByFigure({});
       setFigureContext(null);
       setFigureContextByFigure({});
-      setImageParamsContext(null);
-      setImageParamsContextByFigure({});
-      setExportedFigureIds([]);
       setPaperCharacteristics(null);
       setCurrentStep("schema");
       try { localStorage.removeItem(STORAGE_KEY); } catch {}
@@ -324,8 +290,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setSeriesField,
       paper,
       setPaper,
-      experiment,
-      setExperiment,
       figures,
       setFigures,
       selectedFigure,
@@ -342,12 +306,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setFigureContext,
       figureContextByFigure,
       setFigureContextByFigure,
-      imageParamsContext,
-      setImageParamsContext,
-      imageParamsContextByFigure,
-      setImageParamsContextByFigure,
-      exportedFigureIds,
-      setExportedFigureIds,
       paperCharacteristics,
       setPaperCharacteristics,
     };
@@ -360,7 +318,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     yField,
     seriesField,
     paper,
-    experiment,
     figures,
     selectedFigure,
     resolvedContext,
@@ -369,9 +326,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     digitizationByFigure,
     figureContext,
     figureContextByFigure,
-    imageParamsContext,
-    imageParamsContextByFigure,
-    exportedFigureIds,
     paperCharacteristics,
   ]);
 

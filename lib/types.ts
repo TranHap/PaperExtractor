@@ -40,12 +40,6 @@ export interface FieldValue {
   series?: string;
 }
 
-export interface ExperimentContext {
-  /** Values for shared fields only */
-  values: FieldValue[];
-  summary?: string;
-}
-
 export interface VariableField {
   name: string;
   reason: string;
@@ -117,6 +111,14 @@ export interface Dataset {
   yField?: string;
   seriesField?: string;
   generatedAt: string;
+}
+
+/** Every figure processed so far for one paper, combined into a single export. */
+export interface PaperDataset {
+  schemaName: string;
+  paperTitle?: string;
+  generatedAt: string;
+  figures: Dataset[];
 }
 
 export type StepId =
@@ -195,8 +197,13 @@ export const STEPS: StepMeta[] = [
   {
     id: "merge",
     index: 7,
-    title: "Review & Export",
-    subtitle: "Hợp nhất mọi ngữ cảnh và xuất dữ liệu",
+    title: "Review",
+    subtitle: "Hợp nhất ngữ cảnh của figure này trước khi gộp vào dataset",
   },
-  { id: "dataset", index: 8, title: "Dataset", subtitle: "Kết quả cuối cùng" },
+  {
+    id: "dataset",
+    index: 8,
+    title: "Dataset",
+    subtitle: "Toàn bộ figure đã số hóa của paper — xuất 1 file tổng",
+  },
 ];
