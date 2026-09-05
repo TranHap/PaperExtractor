@@ -209,6 +209,68 @@ export function DigitizeStep() {
             key={currentFigureId ?? digitization.imageUrl}
             value={digitization}
             onChange={handleDigitizationChange}
+            extraPanel={
+              <details className="group rounded-lg border border-border bg-card">
+                <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium marker:hidden">
+                  Đặt tên cột X / Y / Series
+                  <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                    Mặc định: x / y / series
+                  </span>
+                </summary>
+                <div className="flex flex-col gap-4 border-t border-border p-4">
+                  {[
+                    {
+                      label: "X-column",
+                      value: xField,
+                      setValue: setXField,
+                      other: [yField, seriesField],
+                      fallback: "x",
+                    },
+                    {
+                      label: "Y-column",
+                      value: yField,
+                      setValue: setYField,
+                      other: [xField, seriesField],
+                      fallback: "y",
+                    },
+                    {
+                      label: "Series-column",
+                      value: seriesField,
+                      setValue: setSeriesField,
+                      other: [xField, yField],
+                      fallback: "series",
+                    },
+                  ].map((column) => (
+                    <label
+                      key={column.label}
+                      className="flex flex-col gap-1.5 text-sm"
+                    >
+                      <span className="font-medium">{column.label}</span>
+                      <select
+                        value={column.value}
+                        onChange={(event) => column.setValue(event.target.value)}
+                        className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="">
+                          Giữ tên mặc định: {column.fallback}
+                        </option>
+                        {allFields.map((field) => (
+                          <option
+                            key={field.name}
+                            value={field.name}
+                            disabled={column.other.includes(field.name)}
+                          >
+                            {field.label
+                              ? `${field.name} (${field.label})`
+                              : field.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              </details>
+            }
           />
         ) : (
           <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center">
@@ -217,62 +279,6 @@ export function DigitizeStep() {
             </p>
           </div>
         )}
-
-        <details className="group mt-5 rounded-md border border-border">
-          <summary className="cursor-pointer list-none px-3 py-2 text-xs font-medium text-muted-foreground marker:hidden">
-            Đặt tên cột X / Y / Series
-            <span className="ml-1 text-muted-foreground/70">
-              (mặc định: x / y / series)
-            </span>
-          </summary>
-          <div className="grid gap-4 border-t border-border p-4 md:grid-cols-3">
-            {[
-              {
-                label: "X-column",
-                value: xField,
-                setValue: setXField,
-                other: [yField, seriesField],
-                fallback: "x",
-              },
-              {
-                label: "Y-column",
-                value: yField,
-                setValue: setYField,
-                other: [xField, seriesField],
-                fallback: "y",
-              },
-              {
-                label: "Series-column",
-                value: seriesField,
-                setValue: setSeriesField,
-                other: [xField, yField],
-                fallback: "series",
-              },
-            ].map((column) => (
-              <label key={column.label} className="flex flex-col gap-1.5 text-sm">
-                <span className="font-medium">{column.label}</span>
-                <select
-                  value={column.value}
-                  onChange={(event) => column.setValue(event.target.value)}
-                  className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                >
-                  <option value="">Giữ tên mặc định: {column.fallback}</option>
-                  {allFields.map((field) => (
-                    <option
-                      key={field.name}
-                      value={field.name}
-                      disabled={column.other.includes(field.name)}
-                    >
-                      {field.label
-                        ? `${field.name} (${field.label})`
-                        : field.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ))}
-          </div>
-        </details>
       </div>
     </StepShell>
   );

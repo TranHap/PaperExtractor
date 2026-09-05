@@ -89,9 +89,15 @@ function isValidNumberStr(s: string): boolean {
 export function FigureDigitizer({
   value,
   onChange,
+  extraPanel,
 }: {
   value: Digitization;
   onChange: (d: Digitization) => void;
+  /** Extra content rendered in the same right-hand sidebar as the X/Y
+   * calibration and series panels (e.g. digitize-step.tsx's X/Y/Series
+   * column-naming block) — keeps everything about this figure's digitized
+   * output in one place next to the image, instead of scattered below it. */
+  extraPanel?: React.ReactNode;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [pending, setPending] = useState<Pending>(null);
@@ -1357,6 +1363,7 @@ export function FigureDigitizer({
             </p>
           )}
         </div>
+        {extraPanel}
       </aside>
 
       {value.points.length > 0 && (
