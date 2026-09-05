@@ -5,7 +5,6 @@ import {
   Loader2,
   ScanSearch,
   AlertCircle,
-  Check,
   FlaskConical,
   BookOpen,
 } from "lucide-react";
@@ -15,11 +14,11 @@ import { Badge } from "@/components/ui/badge";
 import { ProvenanceBadge } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import type {
-  PaperCharacteristicMaterial,
+  FieldValue,
   PaperCharacteristicEntity,
+  PaperCharacteristicMaterial,
   PaperCharacteristicsResult,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 function download(name: string, content: string, type: string) {
   const blob = new Blob([content], { type });
@@ -31,14 +30,57 @@ function download(name: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
+// A manual edit replaces whatever the AI determined, so drop its
+// provenance/original-value/conversion-note — same convention as
+// ValuesEditor's `update()`, so an edited cell reads the same way everywhere
+// in the app.
+function withEditedValue(
+  values: FieldValue[],
+  index: number,
+  newValue: string,
+): FieldValue[] {
+  return values.map((v, i) =>
+    i === index
+      ? {
+          ...v,
+          value: newValue,
+          source: "edited by user",
+          provenance: undefined,
+          originalValue: undefined,
+          conversionNote: undefined,
+        }
+      : v,
+  );
+}
+
+function EditableValueCell({
+  value,
+  onChange,
+}: {
+  value: FieldValue;
+  onChange: (newValue: string) => void;
+}) {
+  return (
+    <input
+      value={value.value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder="—"
+      aria-label={`Giá trị của ${value.name}`}
+      className="w-full min-w-[90px] rounded border border-transparent bg-transparent px-1 py-0.5 font-medium focus:border-input focus:bg-background focus:outline-none"
+    />
+  );
+}
+
 function EntitySection({
   title,
   icon,
   entities,
+  onValueChange,
 }: {
   title: string;
   icon: ReactNode;
   entities: (PaperCharacteristicMaterial | PaperCharacteristicEntity)[];
+  onValueChange: (entityIndex: number, valueIndex: number, newValue: string) => void;
 }) {
   if (entities.length === 0) return null;
   return (
@@ -73,8 +115,11 @@ function EntitySection({
                     {entity.values.map((v, j) => (
                       <tr key={j} className="border-t border-border">
                         <td className="px-3 py-1 font-mono">{v.name}</td>
-                        <td className="px-3 py-1 font-medium">
-                          {v.value || "—"}
+                        <td className="px-3 py-1">
+                          <EditableValueCell
+                            value={v}
+                            onChange={(newValue) => onValueChange(i, j, newValue)}
+                          />
                           {v.originalValue && (
                             <span className="ml-1 font-normal text-muted-foreground">
                               (gốc: {v.originalValue})
@@ -163,12 +208,38 @@ export function PaperCharacteristicsStep() {
     );
   }
 
+  function updateEntityValue(
+    category: "materials" | "oxidants" | "micropollutants",
+    entityIndex: number,
+    valueIndex: number,
+    newValue: string,
+  ) {
+    if (!paperCharacteristics) return;
+    const list = paperCharacteristics[category].map((entity, i) =>
+      i === entityIndex
+        ? { ...entity, values: withEditedValue(entity.values, valueIndex, newValue) }
+        : entity,
+    );
+    setPaperCharacteristics({ ...paperCharacteristics, [category]: list });
+  }
+
+  function updateGeneralCondition(valueIndex: number, newValue: string) {
+    if (!paperCharacteristics) return;
+    setPaperCharacteristics({
+      ...paperCharacteristics,
+      generalConditions: withEditedValue(
+        paperCharacteristics.generalConditions,
+        valueIndex,
+        newValue,
+      ),
+    });
+  }
+
   return (
     <StepShell
-      step={3}
-      total={8}
+      stepId="paper-characteristics"
       title="Materials"
-      description="Trích xuất toàn bộ đặc tính vật liệu và hằng số chung từ paper. Kết quả sẽ được dùng làm nguồn dự phòng khi trích xuất giá trị figure."
+      description="Trích xuất toàn bộ đặc tính vật liệu và hằng số chung từ paper. Kết quả sẽ được dùng làm nguồn dự phòng khi trích xuất giá trị figure — có thể sửa trực tiếp nếu model trích sai."
       onBack={goBack}
       onNext={goNext}
       nextDisabled={!paperCharacteristics}
@@ -213,22 +284,29 @@ export function PaperCharacteristicsStep() {
 
       {paperCharacteristics && (
         <div className="space-y-6">
+          <p className="text-xs text-muted-foreground">
+            Bấm vào một giá trị để chỉnh sửa trực tiếp nếu model trích sai.
+          </p>
+
           <EntitySection
             title="Vật liệu"
             icon={<FlaskConical className="size-4 text-primary" />}
             entities={paperCharacteristics.materials}
+            onValueChange={(ei, vi, nv) => updateEntityValue("materials", ei, vi, nv)}
           />
 
           <EntitySection
             title="Chất oxy hóa"
             icon={<FlaskConical className="size-4 text-primary" />}
             entities={paperCharacteristics.oxidants}
+            onValueChange={(ei, vi, nv) => updateEntityValue("oxidants", ei, vi, nv)}
           />
 
           <EntitySection
             title="Chất ô nhiễm"
             icon={<FlaskConical className="size-4 text-primary" />}
             entities={paperCharacteristics.micropollutants}
+            onValueChange={(ei, vi, nv) => updateEntityValue("micropollutants", ei, vi, nv)}
           />
 
           {paperCharacteristics.generalConditions.length > 0 && (
@@ -250,8 +328,11 @@ export function PaperCharacteristicsStep() {
                     {paperCharacteristics.generalConditions.map((v, i) => (
                       <tr key={i} className="border-t border-border">
                         <td className="px-3 py-1 font-mono">{v.name}</td>
-                        <td className="px-3 py-1 font-medium">
-                          {v.value || "—"}
+                        <td className="px-3 py-1">
+                          <EditableValueCell
+                            value={v}
+                            onChange={(newValue) => updateGeneralCondition(i, newValue)}
+                          />
                         </td>
                         <td className="px-3 py-1">
                           <ProvenanceBadge provenance={v.provenance} />

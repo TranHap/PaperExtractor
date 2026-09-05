@@ -247,10 +247,182 @@ function mergeFigures(all: RawFigure[]): RawFigure[] {
     });
 }
 
+// --- Deterministic fallback fill for "figure_extract" ---
+//
+// The figure-level LLM call already has a "look up in paper_context" rule
+// baked into its prompt (rule 10), but that's a soft instruction — the model
+// can still leave a field empty even when paper_context clearly has a
+// matching value, e.g. by failing to recognize the field name refers to a
+// property it already extracted. This is a small, deterministic safety net
+// applied AFTER the LLM call: for any field the model left empty, try to
+// match it by name against paper_context and fill it in directly, instead of
+// silently trusting the LLM's judgment call alone (see
+// app/api/extract/fill_value_issue.md, improvement #3).
+
+function normKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function keysLikelyMatch(a: string, b: string): boolean {
+  const na = normKey(a);
+  const nb = normKey(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.length >= 3 && nb.length >= 3 && (na.includes(nb) || nb.includes(na)))
+    return true;
+  return false;
+}
+
+type LooseFieldValue = {
+  name: string;
+  value: string;
+  confidence?: number;
+  source?: string;
+  provenance?: string;
+  originalValue?: string;
+  conversionNote?: string;
+};
+
+type PaperContextShape = {
+  materials?: unknown[];
+  oxidants?: unknown[];
+  micropollutants?: unknown[];
+  generalConditions?: unknown[];
+};
+
+// Builds (fieldNameCandidate -> sourceValue) pairs from paper_context.
+// Entity-scoped properties (materials/oxidants/micropollutants) are only
+// offered as candidates when there's EXACTLY ONE entity of that kind in the
+// paper — with more than one entity, a bare field name like "SBET" doesn't
+// tell us which entity it belongs to, and guessing the wrong one is worse
+// than leaving the field empty for the user to resolve manually.
+function buildFallbackCandidates(
+  paperContext: PaperContextShape | undefined,
+): { key: string; value: LooseFieldValue }[] {
+  if (!paperContext) return [];
+  const out: { key: string; value: LooseFieldValue }[] = [];
+
+  const addSingleEntityGroup = (entities: unknown[] | undefined) => {
+    if (!entities || entities.length !== 1) return;
+    const entity = entities[0] as { values?: LooseFieldValue[] };
+    for (const v of entity.values ?? []) {
+      if (v?.value?.trim()) out.push({ key: v.name, value: v });
+    }
+  };
+  addSingleEntityGroup(paperContext.materials);
+  addSingleEntityGroup(paperContext.oxidants);
+  addSingleEntityGroup(paperContext.micropollutants);
+
+  for (const v of (paperContext.generalConditions ??
+    []) as LooseFieldValue[]) {
+    if (v?.value?.trim()) out.push({ key: v.name, value: v });
+  }
+  return out;
+}
+
+function applyFallbackFill(
+  values: LooseFieldValue[],
+  fields: { name: string; description?: string }[],
+  changingFieldNames: Set<string>,
+  candidates: { key: string; value: LooseFieldValue }[],
+): { values: LooseFieldValue[]; filledCount: number } {
+  if (candidates.length === 0) return { values, filledCount: 0 };
+  let filledCount = 0;
+  const next = values.map((v) => {
+    if (v.value?.trim()) return v;
+    if (changingFieldNames.has(v.name)) return v;
+    const field = fields.find((f) => f.name === v.name);
+    const match = candidates.find(
+      (c) =>
+        keysLikelyMatch(c.key, v.name) ||
+        (field?.description && keysLikelyMatch(c.key, field.description)),
+    );
+    if (!match) return v;
+    filledCount++;
+    return {
+      ...v,
+      value: match.value.value,
+      confidence: match.value.confidence ?? 0.5,
+      source: `Paper context (auto-fill fallback): ${match.value.source || match.key}`,
+      provenance: match.value.provenance ?? "reported",
+      originalValue: match.value.originalValue ?? "",
+      conversionNote: match.value.conversionNote ?? "",
+    };
+  });
+  return { values: next, filledCount };
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
     const task = body.task as string;
+
+    if (task === "suggest_schema") {
+      const { paperText } = body as { paperText: string };
+
+      try {
+        const { object } = await retryStreamObject({
+          model: MODEL,
+          maxOutputTokens: 4000,
+          output: Output.object({
+            schema: z.object({
+              fields: z
+                .array(
+                  z.object({
+                    name: z
+                      .string()
+                      .describe(
+                        "Short, practical field name as it would appear as a spreadsheet column, e.g. 'catalyst', 'initial_pH', 'SBET', 'removal_efficiency'",
+                      ),
+                    type: z
+                      .enum(["string", "number", "select"])
+                      .describe("Data type for this field"),
+                    description: z
+                      .string()
+                      .describe("One short sentence describing what this field captures"),
+                    unit: z
+                      .string()
+                      .describe(
+                        "Standard unit for this field if numeric (e.g. 'mM', 'min', '°C', 'm2/g'), else empty string",
+                      ),
+                    options: z
+                      .array(z.string())
+                      .describe(
+                        "Only when type='select': the distinct option values seen in the paper, else empty array",
+                      ),
+                  }),
+                )
+                .describe(
+                  "10-25 suggested fields worth extracting from this paper into a tabular dataset.",
+                ),
+            }),
+          }),
+          prompt: [
+            "You are helping a researcher set up a data-extraction schema for a scientific paper BEFORE any data is extracted.",
+            "Read the paper text below and suggest a practical list of FIELD NAMES worth extracting — the columns a spreadsheet of this paper's experimental data would need.",
+            "Cover: identity of materials/catalysts used, oxidants/reagents and their dosages, key reaction conditions (pH, temperature, time, concentration...), and the outcome quantities plotted in the paper's figures (e.g. removal efficiency (%), rate constant k, concentration remaining).",
+            "Prefer field names that match how the paper itself refers to the quantity. Keep the list focused and non-redundant.",
+            "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
+            "",
+            "Paper text:",
+            clip(paperText, 60000),
+          ].join("\n\n"),
+        });
+
+        return Response.json(object as Record<string, unknown>);
+      } catch (err) {
+        console.error("extract/suggest_schema failed:", err);
+        if (err instanceof DeadlineExceededError) {
+          return Response.json({ error: err.message }, { status: 500 });
+        }
+        return Response.json(
+          {
+            error: "Model không trả về đúng định dạng JSON, thử lại giúp mình",
+          },
+          { status: 500 },
+        );
+      }
+    }
 
     // Trích xuất MỘT LẦN cho cả bài báo (không lặp lại theo từng figure):
     // xây dựng "paper context" gồm 4 nhóm entity —
@@ -687,7 +859,7 @@ export async function POST(req: Request) {
         );
 
         const llmResult = object as {
-          values: unknown;
+          values: LooseFieldValue[];
           changingFieldNames: string[];
           notes: string;
         };
@@ -695,8 +867,24 @@ export async function POST(req: Request) {
           new Set([...llmResult.changingFieldNames, ...digitizationColumns]),
         );
 
+        // Deterministic safety net: fill any field the model left empty but
+        // that paper_context already has an unambiguous value for.
+        const fallbackCandidates = buildFallbackCandidates(paperContext);
+        const { values: filledValues, filledCount } = applyFallbackFill(
+          llmResult.values,
+          fields,
+          new Set(mergedChangingFieldNames),
+          fallbackCandidates,
+        );
+        if (filledCount > 0) {
+          console.log(
+            `[figure_extract] fallback-filled ${filledCount} field(s) from paper context`,
+          );
+        }
+
         return Response.json({
           ...llmResult,
+          values: filledValues,
           changingFieldNames: mergedChangingFieldNames,
           changingVariable: knownChangingVariable,
           curveLabels: knownCurveLabels,

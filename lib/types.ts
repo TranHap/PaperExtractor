@@ -122,11 +122,10 @@ export interface PaperDataset {
 }
 
 export type StepId =
-  | "schema"
   | "parse"
+  | "schema"
   | "paper-characteristics"
   | "figures-variables"
-  | "figure-values"
   | "digitize"
   | "merge"
   | "dataset";
@@ -150,60 +149,74 @@ export interface PaperCharacteristicsResult {
   notes: string;
 }
 
+/**
+ * Which part of the pipeline a step belongs to, used by the Stepper to group
+ * steps visually:
+ * - "setup"  — done ONCE per paper (upload, define schema, extract materials).
+ * - "figure" — repeated ONCE PER FIGURE (select figure, digitize + fill
+ *   values, review) — this is a loop in practice, not a linear sequence; the
+ *   Dataset step lets the user jump straight back into "figure" steps for
+ *   the next/another figure instead of walking through "setup" again.
+ * - "export" — final combined output for the whole paper.
+ */
+export type StepPhase = "setup" | "figure" | "export";
+
 export interface StepMeta {
   id: StepId;
   index: number;
   title: string;
   subtitle: string;
+  phase: StepPhase;
 }
 
 export const STEPS: StepMeta[] = [
   {
-    id: "schema",
-    index: 1,
-    title: "Schema",
-    subtitle: "Định nghĩa các field cần trích xuất",
-  },
-  {
     id: "parse",
-    index: 2,
+    index: 1,
     title: "Upload Paper",
     subtitle: "Tải PDF & bóc tách nội dung",
+    phase: "setup",
+  },
+  {
+    id: "schema",
+    index: 2,
+    title: "Schema",
+    subtitle: "Định nghĩa các field cần trích xuất",
+    phase: "setup",
   },
   {
     id: "paper-characteristics",
     index: 3,
     title: "Materials",
     subtitle: "Trích xuất đặc tính vật liệu & hằng số chung",
+    phase: "setup",
   },
   {
     id: "figures-variables",
     index: 4,
     title: "Figures & Variables",
     subtitle: "Quét figure và xác định biến thay đổi",
+    phase: "figure",
   },
   {
     id: "digitize",
     index: 5,
-    title: "Digitize",
-    subtitle: "Số hóa điểm dữ liệu",
-  },
-  {
-    id: "figure-values",
-    index: 6,
-    title: "Fill Values",
-    subtitle: "Điền giá trị cho các field còn thiếu của figure",
+    title: "Digitize & Fill Values",
+    subtitle: "Số hóa điểm dữ liệu và điền giá trị field cho figure này",
+    phase: "figure",
   },
   {
     id: "merge",
-    index: 7,
+    index: 6,
     title: "Review",
     subtitle: "Hợp nhất ngữ cảnh của figure này trước khi gộp vào dataset",
+    phase: "figure",
   },
   {
     id: "dataset",
-    index: 8,
+    index: 7,
     title: "Dataset",
     subtitle: "Toàn bộ figure đã số hóa của paper — xuất 1 file tổng",
+    phase: "export",
   },
 ];

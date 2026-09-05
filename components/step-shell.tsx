@@ -3,10 +3,13 @@
 import type React from "react"
 import { ArrowLeft, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { STEPS, type StepId } from "@/lib/types"
 
 interface StepShellProps {
-  step: number
-  total: number
+  /** Looked up against STEPS for the "Bước N / total" label — keeps every
+   * step file in sync automatically instead of hardcoding step/total numbers
+   * that silently go stale whenever a step is added/removed/reordered. */
+  stepId: StepId
   title: string
   description: string
   children: React.ReactNode
@@ -21,8 +24,7 @@ interface StepShellProps {
 }
 
 export function StepShell({
-  step,
-  total,
+  stepId,
   title,
   description,
   children,
@@ -35,6 +37,10 @@ export function StepShell({
   hideBack,
   hideNext,
 }: StepShellProps) {
+  const meta = STEPS.find((s) => s.id === stepId)
+  const step = meta?.index ?? 1
+  const total = STEPS.length
+
   return (
     <div className="flex min-h-full flex-col">
       <header className="border-b border-border px-6 py-5 md:px-10">

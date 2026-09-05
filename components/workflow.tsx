@@ -8,8 +8,6 @@ import { SchemaStep } from "@/components/steps/schema-step";
 import { ParseStep } from "@/components/steps/parse-step";
 import { PaperCharacteristicsStep } from "@/components/steps/paper-characteristics-step";
 import { FiguresVariablesStep } from "@/components/steps/figures-variables-step";
-import { FigureValuesStep } from "@/components/steps/figure-values-step";
-// import { ImageParamsStep } from "@/components/steps/image-params-step";
 import { DigitizeStep } from "@/components/steps/digitize-step";
 import { MergeStep } from "@/components/steps/merge-step";
 import { DatasetStep } from "@/components/steps/dataset-step";
@@ -25,14 +23,12 @@ export function Workflow() {
           <Stepper />
         </div>
         <div className="mt-6 min-w-0 rounded-xl border border-border bg-card p-6">
-          {currentStep === "schema" && <SchemaStep />}
           {currentStep === "parse" && <ParseStep />}
+          {currentStep === "schema" && <SchemaStep />}
           {currentStep === "paper-characteristics" && (
             <PaperCharacteristicsStep />
           )}
           {currentStep === "figures-variables" && <FiguresVariablesStep />}
-          {currentStep === "figure-values" && <FigureValuesStep />}
-          {/* {currentStep === "image-params" && <ImageParamsStep />} */}
           {currentStep === "digitize" && <DigitizeStep />}
           {currentStep === "merge" && <MergeStep />}
           {currentStep === "dataset" && <DatasetStep />}

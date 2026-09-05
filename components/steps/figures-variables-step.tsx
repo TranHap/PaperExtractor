@@ -59,8 +59,7 @@ export function FiguresVariablesStep() {
 
   return (
     <StepShell
-      step={4}
-      total={8}
+      stepId="figures-variables"
       title="Figures & Variables"
       description="Chọn figure để xử lý."
       onBack={goBack}

@@ -2,7 +2,6 @@
 
 import {
   Layers,
-  FlaskConical,
   Image as ImageIcon,
   ScatterChart,
 } from "lucide-react";
@@ -15,7 +14,6 @@ import { buildMerged } from "@/lib/merge";
 export function MergeStep() {
   const {
     schema,
-    resolvedContext,
     figureContext,
     digitization,
     selectedFigure,
@@ -26,27 +24,19 @@ export function MergeStep() {
     goNext,
   } = useWorkflow();
 
-  const base = resolvedContext ?? [];
-  const merged = buildMerged(schema, base, figureContext?.values ?? []);
+  const merged = buildMerged(schema, [], figureContext?.values ?? []);
   const filled = merged.filter((m) => m.value?.trim());
 
   const sources = [
     {
-      icon: FlaskConical,
-      title: "Fill Values",
-      count: base.filter((v) => v.value?.trim()).length,
-      label: "field shared",
-    },
-    {
       icon: ImageIcon,
-      title: "Figure Context",
-      count: (figureContext?.values ?? []).filter((v) => v.value?.trim())
-        .length,
+      title: "Giá trị đã điền",
+      count: filled.length,
       label: "field figure",
     },
     {
       icon: ScatterChart,
-      title: "Digitized Points",
+      title: "Điểm đã số hóa",
       count: digitization?.points.length ?? 0,
       label: "điểm dữ liệu",
     },
@@ -54,15 +44,14 @@ export function MergeStep() {
 
   return (
     <StepShell
-      step={7}
-      total={8}
+      stepId="merge"
       title="Review"
-      description="Hợp nhất giá trị đã điền (Fill Values), Figure Context và các điểm đã số hóa của figure này thành một bản ghi hoàn chỉnh trước khi gộp vào dataset chung của paper."
+      description="Xem lại giá trị đã điền và các điểm đã số hóa của figure này trước khi gộp vào dataset chung của paper."
       onBack={goBack}
       onNext={goNext}
       nextLabel="Tạo Dataset"
     >
-      <div className="mb-6 grid gap-3 sm:grid-cols-3">
+      <div className="mb-6 grid gap-3 sm:grid-cols-2">
         {sources.map((s) => (
           <div
             key={s.title}
@@ -108,10 +97,6 @@ export function MergeStep() {
                     : m.name === seriesField
                       ? "series-column"
                       : null;
-              const fromFigure = (figureContext?.values ?? []).some(
-                (v) =>
-                  v.name === m.name && v.value?.trim() && v.value === m.value,
-              );
 
               return (
                 <tr key={m.name} className="border-t border-border">
@@ -140,12 +125,10 @@ export function MergeStep() {
                         className={
                           columnRole
                             ? "border-chart-2/40 text-chart-2"
-                            : fromFigure
-                              ? "border-chart-2/40 text-chart-2"
-                              : "border-primary/40 text-primary"
+                            : "border-primary/40 text-primary"
                         }
                       >
-                        {columnRole ?? (fromFigure ? "figure" : "fill values")}
+                        {columnRole ?? "figure"}
                       </Badge>
                     ) : null}
                   </td>

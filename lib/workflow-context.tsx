@@ -4,7 +4,6 @@ import type React from "react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Digitization,
-  type FieldValue,
   type FigureContext,
   type FigureItem,
   type PaperCharacteristicsResult,
@@ -54,18 +53,23 @@ interface WorkflowState {
   selectedFigure: FigureItem | null;
   setSelectedFigure: (f: FigureItem | null) => void;
 
-  resolvedContext: FieldValue[] | null;
-  setResolvedContext: (v: FieldValue[] | null) => void;
-
-  resolvedContextByFigure: Record<string, FieldValue[]>;
-  setResolvedContextByFigure: (v: Record<string, FieldValue[]>) => void;
-
   digitization: Digitization | null;
   setDigitization: (d: Digitization | null) => void;
 
   digitizationByFigure: Record<string, Digitization>;
   setDigitizationByFigure: (d: Record<string, Digitization>) => void;
 
+  /**
+   * The CURRENT figure's extracted values + metadata. This is the single
+   * source of truth for "what values does this figure have" — there used to
+   * be a second, parallel `resolvedContext` state that duplicated the same
+   * data (re-derived from this one via `buildMerged`), kept in sync by hand
+   * across every step. That duplication was a real bug source: `figureContext`
+   * wasn't always restored when switching figures, so a stale figure's values
+   * could leak into another figure's Review step. Don't reintroduce a second
+   * copy — components that need schema-ordered values should derive them
+   * on the fly with `buildMerged(schema, [], figureContext.values)`.
+   */
   figureContext: FigureContext | null;
   setFigureContext: (c: FigureContext | null) => void;
 
@@ -80,7 +84,7 @@ const Ctx = createContext<WorkflowState | null>(null);
 
 const ORDER = STEPS.map((s) => s.id);
 
-const STORAGE_KEY = "sde:workflow-state-v2";
+const STORAGE_KEY = "sde:workflow-state-v3";
 
 type PersistedState = {
   currentStep: StepId;
@@ -92,8 +96,6 @@ type PersistedState = {
   paper: ParsedPaper | null;
   figures: FigureItem[];
   selectedFigure: FigureItem | null;
-  resolvedContext: FieldValue[] | null;
-  resolvedContextByFigure: Record<string, FieldValue[]>;
   digitization: Digitization | null;
   digitizationByFigure: Record<string, Digitization>;
   figureContext: FigureContext | null;
@@ -145,7 +147,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const previousPaperFile = useRef<string | null>(initial?.paper?.fileName ?? null);
   const [loaded, setLoaded] = useState(false);
 
-  const [currentStep, setCurrentStep] = useState<StepId>("schema");
+  const [currentStep, setCurrentStep] = useState<StepId>("parse");
   const [schema, setSchema] = useState<Schema | null>(null);
   const [variableFields, setVariableFields] = useState<VariableField[]>([]);
   const [xField, setXField] = useState("");
@@ -154,8 +156,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const [paper, setPaper] = useState<ParsedPaper | null>(null);
   const [figures, setFigures] = useState<FigureItem[]>([]);
   const [selectedFigure, setSelectedFigure] = useState<FigureItem | null>(null);
-  const [resolvedContext, setResolvedContext] = useState<FieldValue[] | null>(null);
-  const [resolvedContextByFigure, setResolvedContextByFigure] = useState<Record<string, FieldValue[]>>({});
   const [digitization, setDigitization] = useState<Digitization | null>(null);
   const [digitizationByFigure, setDigitizationByFigure] = useState<Record<string, Digitization>>({});
   const [figureContext, setFigureContext] = useState<FigureContext | null>(null);
@@ -164,7 +164,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!loaded && initial) {
-      setCurrentStep(initial.currentStep ?? "schema");
+      setCurrentStep(initial.currentStep ?? "parse");
       setSchema(initial.schema ?? null);
       setVariableFields(initial.variableFields ?? []);
       setXField(initial.xField ?? "");
@@ -173,8 +173,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setPaper(initial.paper ?? null);
       setFigures(initial.figures ?? []);
       setSelectedFigure(initial.selectedFigure ?? null);
-      setResolvedContext(initial.resolvedContext ?? null);
-      setResolvedContextByFigure(initial.resolvedContextByFigure ?? {});
       setDigitization(initial.digitization ?? null);
       setDigitizationByFigure(initial.digitizationByFigure ?? {});
       setFigureContext(initial.figureContext ?? null);
@@ -198,8 +196,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setFigures([]);
       setSelectedFigure(null);
       setVariableFields([]);
-      setResolvedContext(null);
-      setResolvedContextByFigure({});
       setDigitization(null);
       setDigitizationByFigure({});
       setFigureContext(null);
@@ -216,8 +212,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       paper,
       figures,
       selectedFigure,
-      resolvedContext,
-      resolvedContextByFigure,
       digitization,
       digitizationByFigure,
       figureContext,
@@ -235,8 +229,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     paper,
     figures,
     selectedFigure,
-    resolvedContext,
-    resolvedContextByFigure,
     digitization,
     digitizationByFigure,
     figureContext,
@@ -262,14 +254,12 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setPaper(null);
       setFigures([]);
       setSelectedFigure(null);
-      setResolvedContext(null);
-      setResolvedContextByFigure({});
       setDigitization(null);
       setDigitizationByFigure({});
       setFigureContext(null);
       setFigureContextByFigure({});
       setPaperCharacteristics(null);
-      setCurrentStep("schema");
+      setCurrentStep("parse");
       try { localStorage.removeItem(STORAGE_KEY); } catch {}
     };
     return {
@@ -294,10 +284,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setFigures,
       selectedFigure,
       setSelectedFigure,
-      resolvedContext,
-      setResolvedContext,
-      resolvedContextByFigure,
-      setResolvedContextByFigure,
       digitization,
       setDigitization,
       digitizationByFigure,
@@ -320,8 +306,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     paper,
     figures,
     selectedFigure,
-    resolvedContext,
-    resolvedContextByFigure,
     digitization,
     digitizationByFigure,
     figureContext,

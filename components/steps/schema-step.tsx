@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useEffect, useState, useRef } from "react";
-import { Upload, AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
+import { Upload, AlertCircle, ChevronDown, ChevronUp, Sparkles, Loader2 } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -94,11 +94,21 @@ const FIELD_TYPES: { value: SchemaField["type"]; label: string }[] = [
   { value: "select", label: "Lựa chọn (select)" },
 ];
 
+type SuggestedField = {
+  name: string;
+  type: SchemaField["type"];
+  description?: string;
+  unit?: string;
+  options?: string[];
+};
+
 export function SchemaStep() {
-  const { schema, setSchema, goNext } = useWorkflow();
+  const { schema, setSchema, paper, goBack, goNext } = useWorkflow();
   const [text, setText] = useState(() =>
     schema ? schema.fields.map((f) => f.name).join("\n") : "",
   );
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
   const [overrides, setOverrides] = useState<Record<string, FieldOverride>>(
     () => {
       if (!schema) return {};
@@ -171,13 +181,57 @@ export function SchemaStep() {
     setError(null);
   }
 
+  async function suggestFromPaper() {
+    if (!paper) return;
+    setSuggesting(true);
+    setSuggestError(null);
+    try {
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: "suggest_schema", paperText: paper.text }),
+      });
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error(
+          `Server returned non-JSON response (status ${res.status}). Thử lại giúp mình.`,
+        );
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gợi ý field thất bại");
+
+      const suggested = (data.fields ?? []) as SuggestedField[];
+      if (suggested.length === 0) {
+        setSuggestError("Model không gợi ý được field nào từ paper này.");
+        return;
+      }
+
+      setText(suggested.map((f) => f.name).join("\n"));
+      setOverrides((prev) => {
+        const next = { ...prev };
+        for (const f of suggested) {
+          next[f.name] = {
+            type: f.type,
+            description: f.description,
+            unit: f.unit,
+            options: f.options,
+          };
+        }
+        return next;
+      });
+    } catch (e) {
+      setSuggestError(e instanceof Error ? e.message : "Có lỗi xảy ra");
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
   return (
     <StepShell
-      step={1}
-      total={8}
+      stepId="schema"
       title="Schema"
       description="Dán tên các cột/field cần trích xuất. Mỗi dòng một tên, hoặc paste CSV header. Bấm vào 1 field để chỉnh type, mô tả, đơn vị, hoặc options."
-      hideBack
+      onBack={goBack}
       nextLabel="Lưu schema & tiếp tục"
       nextDisabled={!parsed}
       onNext={() => {
@@ -202,9 +256,31 @@ export function SchemaStep() {
               className="sr-only"
               onChange={onFile}
             />
+            {paper && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={suggestFromPaper}
+                disabled={suggesting}
+              >
+                {suggesting ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Sparkles className="size-4" />
+                )}
+                Gợi ý field từ paper đã tải
+              </Button>
+            )}
           </div>
+          {suggestError && (
+            <p className="mb-2 flex items-center gap-1.5 text-xs text-destructive">
+              <AlertCircle className="size-3.5" />
+              {suggestError}
+            </p>
+          )}
           <p className="mb-2 font-mono text-[11px] text-muted-foreground">
             Mỗi dòng một tên field, hoặc paste dòng header của CSV.
+            {paper && " Hoặc bấm “Gợi ý field từ paper đã tải” để AI đề xuất danh sách dựa trên nội dung paper."}
           </p>
           <Textarea
             value={text}

@@ -18,7 +18,7 @@ import type { ParsedPaper } from "@/lib/workflow-context";
 import { parsePdf, mergeParsedPapers, type ParseProgress } from "@/lib/pdf";
 
 export function ParseStep() {
-  const { paper, setPaper, goBack, goNext } = useWorkflow();
+  const { paper, setPaper, goNext } = useWorkflow();
   const [mainPaper, setMainPaper] = useState<ParsedPaper | null>(null);
   const [supplements, setSupplements] = useState<ParsedPaper[]>([]);
   const [loading, setLoading] = useState(false);
@@ -99,11 +99,10 @@ export function ParseStep() {
 
   return (
     <StepShell
-      step={2}
-      total={8}
+      stepId="parse"
       title="Upload Paper"
       description="Tải lên file PDF của paper chính, và (tùy chọn) mọi tài liệu bổ sung (Supplementary Information). Hệ thống sẽ bóc tách toàn bộ text và render từng trang thành ảnh — các bước trích xuất sau đó sẽ đọc cả hai."
-      onBack={goBack}
+      hideBack
       onNext={goNext}
       nextDisabled={!paper}
     >

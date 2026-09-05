@@ -51,7 +51,6 @@ export function DatasetStep() {
     paper,
     figures,
     digitizationByFigure,
-    resolvedContextByFigure,
     figureContextByFigure,
     xField,
     yField,
@@ -74,9 +73,8 @@ export function DatasetStep() {
     () =>
       completedFigures.map((figure) => {
         const digit = digitizationByFigure[figure.id];
-        const base = resolvedContextByFigure[figure.id] ?? [];
         const figCtx = figureContextByFigure[figure.id];
-        const rawMerged = buildMerged(schema, base, figCtx?.values ?? []);
+        const rawMerged = buildMerged(schema, [], figCtx?.values ?? []);
         const merged = rawMerged.filter((m) => m.value?.trim());
         const points = digit?.points ?? [];
         const dataset: Dataset = {
@@ -95,7 +93,6 @@ export function DatasetStep() {
     [
       completedFigures,
       digitizationByFigure,
-      resolvedContextByFigure,
       figureContextByFigure,
       schema,
       paper,
@@ -213,8 +210,7 @@ export function DatasetStep() {
 
   return (
     <StepShell
-      step={8}
-      total={8}
+      stepId="dataset"
       title="Dataset"
       description="Toàn bộ figure đã số hóa của paper này, gộp thành một dataset duy nhất. Tải về JSON (đầy đủ ngữ cảnh từng figure) hoặc CSV (mỗi dòng là một điểm, kèm cột Source xác định paper + figure)."
       onBack={goBack}
