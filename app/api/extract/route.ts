@@ -290,34 +290,6 @@ function keysLikelyMatch(a: string, b: string): boolean {
   return false;
 }
 
-function tokenize(s: string): Set<string> {
-  return new Set(
-    s
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((t) => t.length >= 2),
-  );
-}
-
-// Looser than keysLikelyMatch's contiguous-substring check — needed because
-// the same entity can get a full descriptive name in one chunk (e.g.
-// "CuFeO2 rhombohedral crystals (RCs)") and just its short form in another
-// ("CuFeO2 RCs"), and the extra words in between break substring matching
-// even though every meaningful word of the short form is present in the
-// long form. Matches when every token of the shorter name appears somewhere
-// in the longer name's token set.
-function namesLikelyMatch(a: string, b: string): boolean {
-  if (keysLikelyMatch(a, b)) return true;
-  const ta = tokenize(a);
-  const tb = tokenize(b);
-  if (ta.size === 0 || tb.size === 0) return false;
-  const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
-  for (const t of small) {
-    if (!big.has(t)) return false;
-  }
-  return true;
-}
-
 type LooseFieldValue = {
   name: string;
   value: string;
@@ -396,79 +368,6 @@ function applyFallbackFill(
   });
   return { values: next, filledCount };
 }
-
-// --- Helpers for merging "paper_context" results scanned across chunks ---
-//
-// Mirrors the mergeFigures approach: each chunk only sees a slice of the
-// paper, so the same material/oxidant/micropollutant can show up (with
-// different amounts of detail) across multiple chunks, and a required
-// property left empty in one chunk (because that excerpt doesn't state it)
-// may have a real value in another. Merging combines these into one
-// complete entry per entity instead of picking just one chunk's answer.
-
-// Merges two arrays of field-values keyed by (normalized) field name: keeps
-// the first non-empty value seen for each name, only falling back to a
-// later chunk's answer when the earlier one was empty/not_reported.
-function mergeFieldValueArrays(
-  existing: LooseFieldValue[],
-  incoming: LooseFieldValue[],
-): LooseFieldValue[] {
-  const merged = [...existing];
-  const indexByKey = new Map<string, number>();
-  merged.forEach((v, i) => indexByKey.set(normKey(v.name), i));
-  for (const v of incoming) {
-    const key = normKey(v.name);
-    const idx = indexByKey.get(key);
-    if (idx === undefined) {
-      indexByKey.set(key, merged.length);
-      merged.push(v);
-      continue;
-    }
-    if (!merged[idx].value?.trim() && v.value?.trim()) {
-      merged[idx] = v;
-    }
-  }
-  return merged;
-}
-
-// Merges entity lists (materials/oxidants/micropollutants) across chunks:
-// same entity named slightly differently in two chunks (per namesLikelyMatch)
-// collapses into one entry, with its values merged via mergeFieldValueArrays,
-// 'role' kept from whichever chunk set it first, and the longer/more
-// descriptive of the two names kept as the display name (chunk order is
-// non-deterministic under concurrency, so we can't just keep "whichever
-// came first").
-function mergeEntityLists<
-  T extends { name: string; role?: string; values: LooseFieldValue[] },
->(all: T[]): T[] {
-  const order: string[] = [];
-  const byKey = new Map<string, T>();
-  for (const e of all) {
-    if (!e?.name?.trim()) continue;
-    const matchedKey = order.find((k) => namesLikelyMatch(k, e.name));
-    if (!matchedKey) {
-      order.push(e.name);
-      byKey.set(e.name, { ...e, values: [...(e.values ?? [])] });
-      continue;
-    }
-    const existing = byKey.get(matchedKey)!;
-    byKey.set(matchedKey, {
-      ...existing,
-      name: e.name.length > existing.name.length ? e.name : existing.name,
-      role: existing.role || e.role,
-      values: mergeFieldValueArrays(existing.values, e.values ?? []),
-    });
-  }
-  return order.map((k) => byKey.get(k)!);
-}
-
-type PaperContextChunkResult = {
-  materials: { name: string; role?: string; values: LooseFieldValue[] }[];
-  oxidants: { name: string; values: LooseFieldValue[] }[];
-  micropollutants: { name: string; values: LooseFieldValue[] }[];
-  generalConditions: LooseFieldValue[];
-  notes?: string;
-};
 
 export async function POST(req: Request) {
   try {
@@ -555,42 +454,31 @@ export async function POST(req: Request) {
     // Kết quả này sẽ được front-end lưu lại (paperContext) và truyền sang mỗi
     // lần gọi "figure_extract" để dùng làm nguồn TRA CỨU (không phải suy luận)
     // khi field không tìm thấy trong text của riêng figure đó.
-    if (task === "paper_context") {
+    // --- paper_context, split into two small tasks the CLIENT orchestrates ---
+    //
+    // This used to be one server-side task that internally chunked the paper
+    // and scanned every chunk with mapWithConcurrency before responding.
+    // Netlify's Next.js Server Handler enforces a hard ~30s synchronous
+    // timeout on this whole route REGARDLESS of the `runtime`/`maxDuration`
+    // exports above (confirmed from production function logs — the platform
+    // kills the invocation outright at ~30s, well before our own
+    // EDGE_BUDGET_MS deadline logic ever gets a chance to return a clean
+    // JSON error), so a single request that has to wait on every chunk of a
+    // real paper routinely got killed mid-response, and the browser saw a
+    // raw non-JSON 502 instead of a result. Splitting this into two small,
+    // independently-callable tasks — a one-shot naming pass and a
+    // per-chunk scan — lets the CLIENT (components/steps/paper-
+    // characteristics-step.tsx) fire one small request per chunk (each
+    // finishes in a few seconds, comfortably under any platform timeout)
+    // and merge the results itself using the same logic that used to run
+    // here (now in lib/paper-context.ts, shared by client and server).
+
+    // Naming-only pass: identifies every distinct material/oxidant/
+    // micropollutant in the WHOLE paper in one small-output call, so every
+    // per-chunk call below can be told to use the same canonical name for
+    // the same real-world entity instead of each independently guessing one.
+    if (task === "paper_context_names") {
       const { paperText } = body as { paperText: string };
-
-      // Same rationale as "figures" below: split the paper into overlapping
-      // chunks and scan them in parallel, so each individual model call only
-      // has to describe the materials/oxidants/micropollutants mentioned in
-      // ITS OWN excerpt (much less output than the whole paper at once) and
-      // reliably finishes well under the platform's timeout for this route,
-      // instead of one giant call with up to 30000 output tokens that can
-      // easily run past it for long/detailed papers.
-      const taskDeadline = Date.now() + EDGE_BUDGET_MS;
-
-      const PAPER_CONTEXT_CHUNK_SIZE = 7000;
-      const PAPER_CONTEXT_CHUNK_OVERLAP = 500;
-      const PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS = 16;
-      const MAX_TOTAL_PAPER_CHARS = 200_000;
-
-      const chunks = chunkText(
-        clip(paperText, MAX_TOTAL_PAPER_CHARS),
-        PAPER_CONTEXT_CHUNK_SIZE,
-        PAPER_CONTEXT_CHUNK_OVERLAP,
-      );
-
-      // --- Entity-naming pre-pass ---
-      //
-      // Chunks below run independently/in parallel, so nothing stops two
-      // different chunks from naming the SAME material/oxidant/micropollutant
-      // differently (e.g. one chunk sees its full descriptive name, another
-      // only sees a later abbreviation) — and once that happens, no amount of
-      // fuzzy string-matching in mergeEntityLists can reliably tell that
-      // apart from two genuinely different entities. So before scanning
-      // chunks for property VALUES, we run one quick, cheap, whole-paper pass
-      // whose only job is to name every distinct entity once — its output is
-      // tiny (just names/roles, not property tables) so it stays fast even
-      // over the full paper text — and hand that canonical name list to every
-      // chunk call below so they all refer to the same entity the same way.
       const entityNamesSchema = z.object({
         materials: z
           .array(
@@ -626,55 +514,69 @@ export async function POST(req: Request) {
         micropollutants: { name: string }[];
       };
 
-      let knownEntities: EntityNames = {
-        materials: [],
-        oxidants: [],
-        micropollutants: [],
-      };
-      const namingPassStart = Date.now();
       try {
-        const { object } = await retryStreamObject(
-          {
-            model: MODEL,
-            maxOutputTokens: 3000,
-            output: Output.object({ schema: entityNamesSchema }),
-            prompt: [
-              "This is a NAMING-ONLY pass over a scientific paper — do NOT extract any property values, just identify every distinct entity.",
-              "List every DISTINCT catalyst/support/precursor (as 'materials'), oxidant, and micropollutant/target-pollutant named anywhere in this paper.",
-              "One entry per distinct real-world entity — if the paper introduces a material with a full descriptive name and later refers to it by a short abbreviation (e.g. 'CuFeO2 rhombohedral crystals (RCs)' later called just 'RCs' or 'CuFeO2 RCs'), that is ONE entity: pick whichever exact form the paper uses MOST OFTEN as its canonical 'name'.",
-              "",
-              "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
-              "",
-              "Paper text:",
-              clip(paperText, MAX_TOTAL_PAPER_CHARS),
-            ].join("\n\n"),
-          },
-          1,
-          taskDeadline,
-        );
-        knownEntities = object as EntityNames;
-        console.log(
-          `[paper_context DEBUG] naming pass took ${Date.now() - namingPassStart}ms: materials=${knownEntities.materials.length} oxidants=${knownEntities.oxidants.length} micropollutants=${knownEntities.micropollutants.length}`,
-        );
+        const { object } = await retryStreamObject({
+          model: MODEL,
+          maxOutputTokens: 3000,
+          output: Output.object({ schema: entityNamesSchema }),
+          prompt: [
+            "This is a NAMING-ONLY pass over a scientific paper — do NOT extract any property values, just identify every distinct entity.",
+            "List every DISTINCT catalyst/support/precursor (as 'materials'), oxidant, and micropollutant/target-pollutant named anywhere in this paper.",
+            "One entry per distinct real-world entity — if the paper introduces a material with a full descriptive name and later refers to it by a short abbreviation (e.g. 'CuFeO2 rhombohedral crystals (RCs)' later called just 'RCs' or 'CuFeO2 RCs'), that is ONE entity: pick whichever exact form the paper uses MOST OFTEN as its canonical 'name'.",
+            "",
+            "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
+            "",
+            "Paper text:",
+            clip(paperText, 200_000),
+          ].join("\n\n"),
+        });
+        return Response.json(object as EntityNames);
       } catch (err) {
-        // Naming pass is a best-effort consistency aid, not a hard
-        // requirement — if it fails/times out, fall back to letting each
-        // chunk name entities on its own (mergeEntityLists' fuzzy matching
-        // below still catches the easy cases).
-        console.error(
-          "extract/paper_context entity-naming pass failed (continuing without it):",
-          err,
+        console.error("extract/paper_context_names failed:", err);
+        if (err instanceof DeadlineExceededError) {
+          return Response.json({ error: err.message }, { status: 500 });
+        }
+        return Response.json(
+          {
+            error: "Model không trả về đúng định dạng JSON, thử lại giúp mình",
+          },
+          { status: 500 },
         );
       }
+    }
+
+    // Per-chunk scan: extracts materials/oxidants/micropollutants/
+    // generalConditions found in ONE chunk of the paper, using the canonical
+    // entity names from "paper_context_names" (if provided) so results merge
+    // cleanly across chunks once the client combines them (see
+    // lib/paper-context.ts's mergeEntityLists/mergeFieldValueArrays). No
+    // chunking or looping happens here — the CLIENT already sliced the paper
+    // (lib/paper-context.ts's chunkText) and calls this once per chunk.
+    if (task === "paper_context_chunk") {
+      const {
+        chunkText: text,
+        chunkIndex,
+        totalChunks,
+        knownEntities,
+      } = body as {
+        chunkText: string;
+        chunkIndex: number;
+        totalChunks: number;
+        knownEntities?: {
+          materials?: { name: string; role?: string }[];
+          oxidants?: { name: string }[];
+          micropollutants?: { name: string }[];
+        };
+      };
 
       const knownEntitiesBlock = [
-        knownEntities.materials.length > 0
+        knownEntities?.materials?.length
           ? `Materials: ${knownEntities.materials.map((m) => `"${m.name}"${m.role ? ` (${m.role})` : ""}`).join(", ")}`
           : "Materials: (none identified)",
-        knownEntities.oxidants.length > 0
+        knownEntities?.oxidants?.length
           ? `Oxidants: ${knownEntities.oxidants.map((o) => `"${o.name}"`).join(", ")}`
           : "Oxidants: (none identified)",
-        knownEntities.micropollutants.length > 0
+        knownEntities?.micropollutants?.length
           ? `Micropollutants: ${knownEntities.micropollutants.map((m) => `"${m.name}"`).join(", ")}`
           : "Micropollutants: (none identified)",
       ].join("\n");
@@ -749,110 +651,42 @@ export async function POST(req: Request) {
           ),
       });
 
-      let chunkFailures = 0;
-
-      async function scanPaperContextChunk(
-        text: string,
-        index: number,
-      ): Promise<PaperContextChunkResult> {
-        const empty: PaperContextChunkResult = {
-          materials: [],
-          oxidants: [],
-          micropollutants: [],
-          generalConditions: [],
-          notes: "",
-        };
-        try {
-          const { object } = await retryStreamObject(
-            {
-              model: MODEL,
-              maxOutputTokens: 8000,
-              output: Output.object({ schema: paperContextSchema }),
-              prompt: [
-                "You are building a structured reference context (paper context) from ONE EXCERPT of a larger scientific paper, covering four kinds of entities: materials, oxidants, micropollutants, and general reaction conditions.",
-                "",
-                "IMPORTANT: this excerpt is only PART of the full paper — text may start/end mid-sentence, and an entity named here may have more of its properties reported elsewhere in the paper (in another excerpt you can't see). That's expected: only report what THIS excerpt actually states, and don't worry about completeness across the whole paper — the excerpts are merged together afterwards.",
-                "The excerpt may also be part of a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) — treat it with EQUAL weight as the main text: SI commonly holds exactly the characterization values (SBET, pHpzc, oxidant MW, LogKow...) this task needs.",
-                "",
-                "KNOWN ENTITIES — already identified from a first pass over the WHOLE paper. If an entity you find in this excerpt matches one of these (even if THIS excerpt calls it something slightly different, e.g. a different abbreviation), you MUST use the EXACT name string given here as its 'name', so results merge correctly across excerpts. Only use a name NOT in this list if this excerpt clearly describes an entity genuinely absent from it.",
-                knownEntitiesBlock,
-                "",
-                "INSTRUCTIONS:",
-                "1. Identify every catalyst, support, and precursor named in THIS excerpt, and list it under 'materials' (using the matching KNOWN ENTITIES name when applicable). Do not list a material unless this excerpt actually names it.",
-                "2. Identify every oxidant named in THIS excerpt, and list it under 'oxidants' (using the matching KNOWN ENTITIES name when applicable).",
-                "3. Identify every micropollutant / target pollutant named in THIS excerpt, and list it under 'micropollutants' (using the matching KNOWN ENTITIES name when applicable).",
-                "4. For every material you list, you MUST emit one entry for each REQUIRED property (Support type, Size, SBET, Pore volume, Average pore size, pHpzc, 2Theta) — never silently skip one just because it's absent from this excerpt, emit it with value='' and provenance='not_reported' instead. Plus extract every OTHER characterization property this excerpt reports for it (elemental composition, crystallite size, rate constant, etc.). These are all this material's OWN measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them.",
-                "5. For every oxidant you list, you MUST emit one entry for each REQUIRED property (Chemical formula/species, MW, O-O bond dissociation energy, Standard reduction potential, pKa), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants for the oxidant species itself (not measured by this paper's authors): if this excerpt doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species. If the oxidant has no O-O bond, report that property as value='Not applicable', provenance='not_applicable'.",
-                "6. For every micropollutant you list, you MUST emit one entry for each REQUIRED property (MW, LogKow, E, S, A, B, V), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants: if this excerpt doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent Abraham descriptors (E/S/A/B/V) — if a reliable value isn't known, value='' and provenance='not_reported'.",
-                "7. Extract default/shared reaction conditions into 'generalConditions', only if THIS excerpt explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume). These come from THIS paper only — provenance='reported', never looked_up.",
-                "8. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
-                "9. If a paper-specific property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
-                "10. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 5-6), and only when clearly labeled provenance='looked_up' with its basis stated.",
-                "11. If this excerpt names no material, oxidant, or micropollutant at all, return empty arrays for those — do not force an entry.",
-                "",
-                "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
-                "",
-                `Excerpt ${index + 1} of ${chunks.length} (paper split into sections for processing):`,
-                text,
-              ].join("\n\n"),
-            },
-            1, // small call now — 1 retry is plenty
-            taskDeadline,
-          );
-          const r = object as PaperContextChunkResult;
-          console.log(
-            `[paper_context DEBUG] chunk ${index + 1}/${chunks.length}: materials=${r.materials?.length ?? 0} oxidants=${r.oxidants?.length ?? 0} micropollutants=${r.micropollutants?.length ?? 0} generalConditions=${r.generalConditions?.length ?? 0}`,
-          );
-          return r;
-        } catch (err) {
-          // One slow/failed section shouldn't sink the whole scan — log it,
-          // skip it, and let the rest of the paper's context still come back.
-          chunkFailures++;
-          console.error(`extract/paper_context chunk ${index} failed:`, err);
-          return empty;
-        }
-      }
-
       try {
-        const chunkResults = await mapWithConcurrency(
-          chunks,
-          PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS,
-          scanPaperContextChunk,
-        );
-
-        const materials = mergeEntityLists(
-          chunkResults.flatMap((r) => r.materials ?? []),
-        );
-        const oxidants = mergeEntityLists(
-          chunkResults.flatMap((r) => r.oxidants ?? []),
-        );
-        const micropollutants = mergeEntityLists(
-          chunkResults.flatMap((r) => r.micropollutants ?? []),
-        );
-        const generalConditions = chunkResults.reduce(
-          (acc, r) => mergeFieldValueArrays(acc, r.generalConditions ?? []),
-          [] as LooseFieldValue[],
-        );
-        const notes = chunkResults
-          .map((r) => r.notes?.trim())
-          .filter((n): n is string => Boolean(n))
-          .join(" ");
-
-        return Response.json({
-          materials,
-          oxidants,
-          micropollutants,
-          generalConditions,
-          notes,
-          // Lets the front-end optionally warn the user that a few sections
-          // of a very long paper couldn't be scanned in time, instead of
-          // silently returning an incomplete context with no explanation.
-          ...(chunkFailures > 0
-            ? { partial: true, chunkFailures, totalChunks: chunks.length }
-            : {}),
+        const { object } = await retryStreamObject({
+          model: MODEL,
+          maxOutputTokens: 8000,
+          output: Output.object({ schema: paperContextSchema }),
+          prompt: [
+            "You are building a structured reference context (paper context) from ONE EXCERPT of a larger scientific paper, covering four kinds of entities: materials, oxidants, micropollutants, and general reaction conditions.",
+            "",
+            "IMPORTANT: this excerpt is only PART of the full paper — text may start/end mid-sentence, and an entity named here may have more of its properties reported elsewhere in the paper (in another excerpt you can't see). That's expected: only report what THIS excerpt actually states, and don't worry about completeness across the whole paper — the excerpts are merged together afterwards.",
+            "The excerpt may also be part of a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) — treat it with EQUAL weight as the main text: SI commonly holds exactly the characterization values (SBET, pHpzc, oxidant MW, LogKow...) this task needs.",
+            "",
+            "KNOWN ENTITIES — already identified from a first pass over the WHOLE paper. If an entity you find in this excerpt matches one of these (even if THIS excerpt calls it something slightly different, e.g. a different abbreviation), you MUST use the EXACT name string given here as its 'name', so results merge correctly across excerpts. Only use a name NOT in this list if this excerpt clearly describes an entity genuinely absent from it.",
+            knownEntitiesBlock,
+            "",
+            "INSTRUCTIONS:",
+            "1. Identify every catalyst, support, and precursor named in THIS excerpt, and list it under 'materials' (using the matching KNOWN ENTITIES name when applicable). Do not list a material unless this excerpt actually names it.",
+            "2. Identify every oxidant named in THIS excerpt, and list it under 'oxidants' (using the matching KNOWN ENTITIES name when applicable).",
+            "3. Identify every micropollutant / target pollutant named in THIS excerpt, and list it under 'micropollutants' (using the matching KNOWN ENTITIES name when applicable).",
+            "4. For every material you list, you MUST emit one entry for each REQUIRED property (Support type, Size, SBET, Pore volume, Average pore size, pHpzc, 2Theta) — never silently skip one just because it's absent from this excerpt, emit it with value='' and provenance='not_reported' instead. Plus extract every OTHER characterization property this excerpt reports for it (elemental composition, crystallite size, rate constant, etc.). These are all this material's OWN measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them.",
+            "5. For every oxidant you list, you MUST emit one entry for each REQUIRED property (Chemical formula/species, MW, O-O bond dissociation energy, Standard reduction potential, pKa), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants for the oxidant species itself (not measured by this paper's authors): if this excerpt doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species. If the oxidant has no O-O bond, report that property as value='Not applicable', provenance='not_applicable'.",
+            "6. For every micropollutant you list, you MUST emit one entry for each REQUIRED property (MW, LogKow, E, S, A, B, V), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants: if this excerpt doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent Abraham descriptors (E/S/A/B/V) — if a reliable value isn't known, value='' and provenance='not_reported'.",
+            "7. Extract default/shared reaction conditions into 'generalConditions', only if THIS excerpt explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume). These come from THIS paper only — provenance='reported', never looked_up.",
+            "8. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
+            "9. If a paper-specific property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
+            "10. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 5-6), and only when clearly labeled provenance='looked_up' with its basis stated.",
+            "11. If this excerpt names no material, oxidant, or micropollutant at all, return empty arrays for those — do not force an entry.",
+            "",
+            "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
+            "",
+            `Excerpt ${chunkIndex + 1} of ${totalChunks} (paper split into sections for processing):`,
+            text,
+          ].join("\n\n"),
         });
+        return Response.json(object as Record<string, unknown>);
       } catch (err) {
-        console.error("extract/paper_context failed:", err);
+        console.error(`extract/paper_context_chunk ${chunkIndex} failed:`, err);
         if (err instanceof DeadlineExceededError) {
           return Response.json({ error: err.message }, { status: 500 });
         }
