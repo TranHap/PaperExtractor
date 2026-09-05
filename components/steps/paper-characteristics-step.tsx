@@ -170,6 +170,7 @@ function EntitySection({
 export function PaperCharacteristicsStep() {
   const {
     paper,
+    schema,
     goBack,
     goNext,
     paperCharacteristics,
@@ -218,6 +219,15 @@ export function PaperCharacteristicsStep() {
     setProgress(null);
     try {
       const clippedText = clip(paper.text, PAPER_CONTEXT_MAX_TOTAL_CHARS);
+      // Only look for the columns the user's own schema actually needs —
+      // replaces the old hardcoded materials-science property list (SBET,
+      // pHpzc, LogKow, Abraham descriptors, etc.), which asked for far more
+      // than most schemas need and slowed every chunk call down.
+      const fields = (schema?.fields ?? []).map((f) => ({
+        name: f.name,
+        description: f.description,
+        unit: f.unit,
+      }));
 
       let knownEntities: EntityNames = {
         materials: [],
@@ -256,6 +266,7 @@ export function PaperCharacteristicsStep() {
               chunkIndex: index,
               totalChunks: chunks.length,
               knownEntities,
+              fields,
             });
             return {
               materials: data.materials ?? [],

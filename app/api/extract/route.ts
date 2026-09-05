@@ -558,6 +558,7 @@ export async function POST(req: Request) {
         chunkIndex,
         totalChunks,
         knownEntities,
+        fields,
       } = body as {
         chunkText: string;
         chunkIndex: number;
@@ -567,6 +568,12 @@ export async function POST(req: Request) {
           oxidants?: { name: string }[];
           micropollutants?: { name: string }[];
         };
+        // The user's own schema (defined in the "Schema" step) — the only
+        // properties/columns this task should look for. Replaces the old
+        // hardcoded materials-science property list (SBET, pHpzc, LogKow,
+        // Abraham descriptors, etc.) which asked for far more than most
+        // schemas actually need and slowed every chunk call down.
+        fields?: { name: string; description?: string; unit?: string }[];
       };
 
       const knownEntitiesBlock = [
@@ -580,6 +587,16 @@ export async function POST(req: Request) {
           ? `Micropollutants: ${knownEntities.micropollutants.map((m) => `"${m.name}"`).join(", ")}`
           : "Micropollutants: (none identified)",
       ].join("\n");
+
+      const schemaFieldsBlock = JSON.stringify(
+        (fields ?? []).map((f) => ({
+          name: f.name,
+          description: f.description || undefined,
+          unit: f.unit || undefined,
+        })),
+        null,
+        2,
+      );
 
       const paperContextSchema = z.object({
         materials: z
@@ -598,7 +615,7 @@ export async function POST(req: Request) {
               values: z
                 .array(fieldValueSchema)
                 .describe(
-                  "One entry for EACH of these REQUIRED characterization properties — 'Support type', 'Size', 'SBET', 'Pore volume', 'Average pore size', 'pHpzc', '2Theta' — PLUS one entry for every OTHER characterization property reported for this material in THIS excerpt (elemental composition, crystallite size, rate constant, etc.). These are the material's own measured/experimental data: NEVER use provenance='looked_up' for any of them — if not reported in this excerpt, value='' and provenance='not_reported' (it may still be reported elsewhere in the paper, in another excerpt).",
+                  "One entry for EACH field in 'Schema fields' (given below) that is a meaningful property of THIS SPECIFIC material — skip any schema field that clearly does not describe a material's own characteristic (e.g. a micropollutant-only property). These are the material's own measured/experimental data: NEVER use provenance='looked_up' for any of them — if not reported in this excerpt, value='' and provenance='not_reported' (it may still be reported elsewhere in the paper, in another excerpt).",
                 ),
             }),
           )
@@ -616,7 +633,7 @@ export async function POST(req: Request) {
               values: z
                 .array(fieldValueSchema)
                 .describe(
-                  "One entry for EACH of these REQUIRED properties — 'Chemical formula/species', 'MW', 'O-O bond dissociation energy', 'Standard reduction potential' (name the relevant half-reaction), 'pKa' — PLUS any other physicochemical property reported for this oxidant. These are universal physicochemical constants: if not stated in this excerpt, you MAY use provenance='looked_up' from established chemistry knowledge for the EXACT chemical species involved (state that species in conversionNote). If the oxidant has no O-O bond, value='Not applicable' with provenance='not_applicable' for that entry.",
+                  "One entry for EACH field in 'Schema fields' (given below) that is a meaningful universal physicochemical property of THIS SPECIFIC oxidant (e.g. MW, pKa, standard reduction potential) — skip fields that don't describe an oxidant property. These are universal constants for the oxidant species itself: if not stated in this excerpt, you MAY use provenance='looked_up' from established chemistry knowledge for the EXACT chemical species involved (state that species in conversionNote). If a field genuinely doesn't apply to this oxidant (e.g. an O-O bond property for an oxidant with no O-O bond), value='Not applicable' with provenance='not_applicable'.",
                 ),
             }),
           )
@@ -632,7 +649,7 @@ export async function POST(req: Request) {
               values: z
                 .array(fieldValueSchema)
                 .describe(
-                  "One entry for EACH of these REQUIRED properties — 'MW', 'LogKow', 'E', 'S', 'A', 'B', 'V' (Abraham solvation/LSER descriptors) — PLUS any other physicochemical property reported for this micropollutant. These are universal physicochemical constants: if not stated in this excerpt, you MAY fill it from reliable established chemistry/literature knowledge with provenance='looked_up'. Never invent E/S/A/B/V — if a reliable value cannot be established, value='' and provenance='not_reported'.",
+                  "One entry for EACH field in 'Schema fields' (given below) that is a meaningful universal physicochemical property of THIS SPECIFIC micropollutant (e.g. MW, LogKow) — skip fields that don't describe a micropollutant property. These are universal constants: if not stated in this excerpt, you MAY fill it from reliable established chemistry/literature knowledge with provenance='looked_up'. Never invent a value — if a reliable one cannot be established, value='' and provenance='not_reported'.",
                 ),
             }),
           )
@@ -642,7 +659,7 @@ export async function POST(req: Request) {
         generalConditions: z
           .array(fieldValueSchema)
           .describe(
-            "Paper-wide default/fixed reaction conditions NOT tied to one specific material/oxidant/micropollutant — e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume, HPLC wavelength, column type, flow rate — ONLY if THIS excerpt explicitly frames them as a general/shared condition (e.g. in Materials & Methods, or a figure caption that says 'unless otherwise noted').",
+            "One entry for each field in 'Schema fields' that is a paper-wide default/fixed condition NOT tied to one specific material/oxidant/micropollutant (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume) — ONLY if THIS excerpt explicitly frames it as a general/shared condition (e.g. in Materials & Methods, or a figure caption that says 'unless otherwise noted').",
           ),
         notes: z
           .string()
@@ -660,7 +677,10 @@ export async function POST(req: Request) {
             "You are building a structured reference context (paper context) from ONE EXCERPT of a larger scientific paper, covering four kinds of entities: materials, oxidants, micropollutants, and general reaction conditions.",
             "",
             "IMPORTANT: this excerpt is only PART of the full paper — text may start/end mid-sentence, and an entity named here may have more of its properties reported elsewhere in the paper (in another excerpt you can't see). That's expected: only report what THIS excerpt actually states, and don't worry about completeness across the whole paper — the excerpts are merged together afterwards.",
-            "The excerpt may also be part of a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) — treat it with EQUAL weight as the main text: SI commonly holds exactly the characterization values (SBET, pHpzc, oxidant MW, LogKow...) this task needs.",
+            "The excerpt may also be part of a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) — treat it with EQUAL weight as the main text: SI commonly holds exactly the characterization values this task needs.",
+            "",
+            "SCHEMA FIELDS — the ONLY properties/columns this dataset needs (from the user's own schema). Do not report a property outside this list, and do not force an entry for a field that doesn't apply to a given entity — only emit values for fields that are genuinely meaningful for that specific entity:",
+            schemaFieldsBlock,
             "",
             "KNOWN ENTITIES — already identified from a first pass over the WHOLE paper. If an entity you find in this excerpt matches one of these (even if THIS excerpt calls it something slightly different, e.g. a different abbreviation), you MUST use the EXACT name string given here as its 'name', so results merge correctly across excerpts. Only use a name NOT in this list if this excerpt clearly describes an entity genuinely absent from it.",
             knownEntitiesBlock,
@@ -669,14 +689,15 @@ export async function POST(req: Request) {
             "1. Identify every catalyst, support, and precursor named in THIS excerpt, and list it under 'materials' (using the matching KNOWN ENTITIES name when applicable). Do not list a material unless this excerpt actually names it.",
             "2. Identify every oxidant named in THIS excerpt, and list it under 'oxidants' (using the matching KNOWN ENTITIES name when applicable).",
             "3. Identify every micropollutant / target pollutant named in THIS excerpt, and list it under 'micropollutants' (using the matching KNOWN ENTITIES name when applicable).",
-            "4. For every material you list, you MUST emit one entry for each REQUIRED property (Support type, Size, SBET, Pore volume, Average pore size, pHpzc, 2Theta) — never silently skip one just because it's absent from this excerpt, emit it with value='' and provenance='not_reported' instead. Plus extract every OTHER characterization property this excerpt reports for it (elemental composition, crystallite size, rate constant, etc.). These are all this material's OWN measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them.",
-            "5. For every oxidant you list, you MUST emit one entry for each REQUIRED property (Chemical formula/species, MW, O-O bond dissociation energy, Standard reduction potential, pKa), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants for the oxidant species itself (not measured by this paper's authors): if this excerpt doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species. If the oxidant has no O-O bond, report that property as value='Not applicable', provenance='not_applicable'.",
-            "6. For every micropollutant you list, you MUST emit one entry for each REQUIRED property (MW, LogKow, E, S, A, B, V), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants: if this excerpt doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent Abraham descriptors (E/S/A/B/V) — if a reliable value isn't known, value='' and provenance='not_reported'.",
-            "7. Extract default/shared reaction conditions into 'generalConditions', only if THIS excerpt explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume). These come from THIS paper only — provenance='reported', never looked_up.",
-            "8. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
-            "9. If a paper-specific property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
-            "10. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 5-6), and only when clearly labeled provenance='looked_up' with its basis stated.",
-            "11. If this excerpt names no material, oxidant, or micropollutant at all, return empty arrays for those — do not force an entry.",
+            "4. For every material you list, emit one 'values' entry for each SCHEMA FIELD above that meaningfully matches a property of THAT SPECIFIC material (match by meaning, not exact string — e.g. schema field 'SBET' matches 'BET surface area'). These are the material's own measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them; if a matching schema field isn't reported in this excerpt, still emit it with value='' and provenance='not_reported'.",
+            "5. For every oxidant you list, emit one 'values' entry for each SCHEMA FIELD above that meaningfully matches a universal physicochemical property of THAT SPECIFIC oxidant (e.g. MW, pKa, standard reduction potential). If this excerpt doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species.",
+            "6. For every micropollutant you list, emit one 'values' entry for each SCHEMA FIELD above that meaningfully matches a universal physicochemical property of THAT SPECIFIC micropollutant (e.g. MW, LogKow). If this excerpt doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent a value — if a reliable value isn't known, value='' and provenance='not_reported'.",
+            "7. For any SCHEMA FIELD that is NOT a property of one specific material/oxidant/micropollutant (i.e. a paper-wide default/shared condition), extract it into 'generalConditions' ONLY if THIS excerpt explicitly frames it as default/shared. These come from THIS paper only — provenance='reported', never looked_up.",
+            "8. A SCHEMA FIELD that is really a per-figure OUTCOME/varying quantity (e.g. removal efficiency, rate constant, concentration remaining — something that differs from one curve/experiment to another rather than being a fixed characteristic or condition) does NOT belong here at all: leave it out of every entity's 'values' and out of 'generalConditions'. It will be extracted separately per figure later.",
+            "9. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
+            "10. If a property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
+            "11. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 5-6), and only when clearly labeled provenance='looked_up' with its basis stated.",
+            "12. If this excerpt names no material, oxidant, or micropollutant at all, return empty arrays for those — do not force an entry.",
             "",
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "",
