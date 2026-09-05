@@ -352,6 +352,75 @@ function applyFallbackFill(
   return { values: next, filledCount };
 }
 
+// --- Helpers for merging "paper_context" results scanned across chunks ---
+//
+// Mirrors the mergeFigures approach: each chunk only sees a slice of the
+// paper, so the same material/oxidant/micropollutant can show up (with
+// different amounts of detail) across multiple chunks, and a required
+// property left empty in one chunk (because that excerpt doesn't state it)
+// may have a real value in another. Merging combines these into one
+// complete entry per entity instead of picking just one chunk's answer.
+
+// Merges two arrays of field-values keyed by (normalized) field name: keeps
+// the first non-empty value seen for each name, only falling back to a
+// later chunk's answer when the earlier one was empty/not_reported.
+function mergeFieldValueArrays(
+  existing: LooseFieldValue[],
+  incoming: LooseFieldValue[],
+): LooseFieldValue[] {
+  const merged = [...existing];
+  const indexByKey = new Map<string, number>();
+  merged.forEach((v, i) => indexByKey.set(normKey(v.name), i));
+  for (const v of incoming) {
+    const key = normKey(v.name);
+    const idx = indexByKey.get(key);
+    if (idx === undefined) {
+      indexByKey.set(key, merged.length);
+      merged.push(v);
+      continue;
+    }
+    if (!merged[idx].value?.trim() && v.value?.trim()) {
+      merged[idx] = v;
+    }
+  }
+  return merged;
+}
+
+// Merges entity lists (materials/oxidants/micropollutants) across chunks:
+// same entity named slightly differently in two chunks (per keysLikelyMatch)
+// collapses into one entry, with its values merged via mergeFieldValueArrays
+// and 'role' kept from whichever chunk set it first.
+function mergeEntityLists<
+  T extends { name: string; role?: string; values: LooseFieldValue[] },
+>(all: T[]): T[] {
+  const order: string[] = [];
+  const byKey = new Map<string, T>();
+  for (const e of all) {
+    if (!e?.name?.trim()) continue;
+    const matchedKey = order.find((k) => keysLikelyMatch(k, e.name));
+    if (!matchedKey) {
+      order.push(e.name);
+      byKey.set(e.name, { ...e, values: [...(e.values ?? [])] });
+      continue;
+    }
+    const existing = byKey.get(matchedKey)!;
+    byKey.set(matchedKey, {
+      ...existing,
+      role: existing.role || e.role,
+      values: mergeFieldValueArrays(existing.values, e.values ?? []),
+    });
+  }
+  return order.map((k) => byKey.get(k)!);
+}
+
+type PaperContextChunkResult = {
+  materials: { name: string; role?: string; values: LooseFieldValue[] }[];
+  oxidants: { name: string; values: LooseFieldValue[] }[];
+  micropollutants: { name: string; values: LooseFieldValue[] }[];
+  generalConditions: LooseFieldValue[];
+  notes?: string;
+};
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -440,105 +509,191 @@ export async function POST(req: Request) {
     if (task === "paper_context") {
       const { paperText } = body as { paperText: string };
 
-      try {
-        const { object } = await retryStreamObject({
-          model: MODEL,
-          maxOutputTokens: 30000, // gpt-4.1-nano: tối đa 32768 completion tokens
-          output: Output.object({
-            schema: z.object({
-              materials: z
-                .array(
-                  z.object({
-                    name: z
-                      .string()
-                      .describe(
-                        "Exact material name as referred to in the paper, e.g. 'Cu-rGO LDH', 'Mn-rGO LDH', 'rGO', 'Fe3O4'",
-                      ),
-                    role: z
-                      .string()
-                      .describe(
-                        "Role of this material in the study, e.g. 'catalyst', 'precursor', 'support', 'benchmark catalyst', or empty string",
-                      ),
-                    values: z
-                      .array(fieldValueSchema)
-                      .describe(
-                        "One entry for EACH of these REQUIRED characterization properties — 'Support type', 'Size', 'SBET', 'Pore volume', 'Average pore size', 'pHpzc', '2Theta' — PLUS one entry for every OTHER characterization property reported for this material anywhere in the paper (elemental composition, crystallite size, rate constant, etc.). These are the material's own measured/experimental data: NEVER use provenance='looked_up' for any of them — if not reported, value='' and provenance='not_reported'.",
-                      ),
-                  }),
-                )
-                .describe(
-                  "Every catalyst, support, and precursor mentioned in the paper.",
-                ),
-              oxidants: z
-                .array(
-                  z.object({
-                    name: z
-                      .string()
-                      .describe(
-                        "Exact oxidant name as referred to in the paper, e.g. 'Peracetic acid', 'H2O2', 'Persulfate'",
-                      ),
-                    values: z
-                      .array(fieldValueSchema)
-                      .describe(
-                        "One entry for EACH of these REQUIRED properties — 'Chemical formula/species', 'MW', 'O-O bond dissociation energy', 'Standard reduction potential' (name the relevant half-reaction), 'pKa' — PLUS any other physicochemical property reported for this oxidant. These are universal physicochemical constants: if not stated in the paper, you MAY use provenance='looked_up' from established chemistry knowledge for the EXACT chemical species involved (state that species in conversionNote). If the oxidant has no O-O bond, value='Not applicable' with provenance='not_applicable' for that entry.",
-                      ),
-                  }),
-                )
-                .describe("Every oxidant used/mentioned in the paper."),
-              micropollutants: z
-                .array(
-                  z.object({
-                    name: z
-                      .string()
-                      .describe(
-                        "Exact micropollutant / target compound name as referred to in the paper, e.g. 'Carbamazepine'",
-                      ),
-                    values: z
-                      .array(fieldValueSchema)
-                      .describe(
-                        "One entry for EACH of these REQUIRED properties — 'MW', 'LogKow', 'E', 'S', 'A', 'B', 'V' (Abraham solvation/LSER descriptors) — PLUS any other physicochemical property reported for this micropollutant. These are universal physicochemical constants: if not stated in the paper, you MAY use provenance='looked_up' from established chemistry/literature knowledge. Never invent E/S/A/B/V — if a reliable value cannot be established, value='' and provenance='not_reported'.",
-                      ),
-                  }),
-                )
-                .describe(
-                  "Every micropollutant / target pollutant studied in the paper.",
-                ),
-              generalConditions: z
-                .array(fieldValueSchema)
-                .describe(
-                  "Paper-wide default/fixed reaction conditions NOT tied to one specific material/oxidant/micropollutant — e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume, HPLC wavelength, column type, flow rate — ONLY if explicitly stated as a general/shared condition (e.g. in Materials & Methods or a figure caption that says 'unless otherwise noted').",
-                ),
-              notes: z
+      // Same rationale as "figures" below: split the paper into overlapping
+      // chunks and scan them in parallel, so each individual model call only
+      // has to describe the materials/oxidants/micropollutants mentioned in
+      // ITS OWN excerpt (much less output than the whole paper at once) and
+      // reliably finishes well under the platform's timeout for this route,
+      // instead of one giant call with up to 30000 output tokens that can
+      // easily run past it for long/detailed papers.
+      const taskDeadline = Date.now() + EDGE_BUDGET_MS;
+
+      const PAPER_CONTEXT_CHUNK_SIZE = 12000;
+      const PAPER_CONTEXT_CHUNK_OVERLAP = 800;
+      const PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS = 12;
+      const MAX_TOTAL_PAPER_CHARS = 200_000;
+
+      const chunks = chunkText(
+        clip(paperText, MAX_TOTAL_PAPER_CHARS),
+        PAPER_CONTEXT_CHUNK_SIZE,
+        PAPER_CONTEXT_CHUNK_OVERLAP,
+      );
+
+      const paperContextSchema = z.object({
+        materials: z
+          .array(
+            z.object({
+              name: z
                 .string()
                 .describe(
-                  "Short summary of coverage / anything ambiguous, or empty string",
+                  "Exact material name as referred to in the paper, e.g. 'Cu-rGO LDH', 'Mn-rGO LDH', 'rGO', 'Fe3O4'",
+                ),
+              role: z
+                .string()
+                .describe(
+                  "Role of this material in the study, e.g. 'catalyst', 'precursor', 'support', 'benchmark catalyst', or empty string",
+                ),
+              values: z
+                .array(fieldValueSchema)
+                .describe(
+                  "One entry for EACH of these REQUIRED characterization properties — 'Support type', 'Size', 'SBET', 'Pore volume', 'Average pore size', 'pHpzc', '2Theta' — PLUS one entry for every OTHER characterization property reported for this material in THIS excerpt (elemental composition, crystallite size, rate constant, etc.). These are the material's own measured/experimental data: NEVER use provenance='looked_up' for any of them — if not reported in this excerpt, value='' and provenance='not_reported' (it may still be reported elsewhere in the paper, in another excerpt).",
                 ),
             }),
-          }),
-          prompt: [
-            "You are building a COMPLETE, structured reference context (paper context) for this scientific paper, covering four kinds of entities: materials, oxidants, micropollutants, and general reaction conditions.",
-            "",
-            "INSTRUCTIONS:",
-            "1. Scan the ENTIRE paper text: abstract, materials & methods, characterization, results & discussion, conclusion. The text may also contain a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) after the main paper — treat it with EQUAL weight, not as an appendix to skim: SI commonly holds exactly the characterization values (SBET, pHpzc, oxidant MW, LogKow...) this task needs.",
-            "2. Identify every catalyst, support, and precursor by its exact name as used in the paper, and list it under 'materials'.",
-            "3. Identify every oxidant used or mentioned in the paper, and list it under 'oxidants'.",
-            "4. Identify every micropollutant / target pollutant studied in the paper, and list it under 'micropollutants'.",
-            "5. For every material, you MUST emit one entry for each REQUIRED property listed in the schema (Support type, Size, SBET, Pore volume, Average pore size, pHpzc, 2Theta) — never silently skip one just because it's absent, emit it with value='' and provenance='not_reported' instead. Plus extract every OTHER characterization property you find (elemental composition, rate constants, activation energy, dosage, etc.). These are all this material's OWN measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them; if the paper doesn't report a number, it stays empty/not_reported, no exceptions.",
-            "6. For every oxidant, you MUST emit one entry for each REQUIRED property (Chemical formula/species, MW, O-O bond dissociation energy, Standard reduction potential, pKa), plus any other physicochemical property found. These are universal physicochemical constants for the oxidant species itself (not measured by this paper's authors): if the paper doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species. If the oxidant has no O-O bond, report that property as value='Not applicable', provenance='not_applicable'.",
-            "7. For every micropollutant, you MUST emit one entry for each REQUIRED property (MW, LogKow, E, S, A, B, V), plus any other physicochemical property found. These are universal physicochemical constants: if the paper doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent Abraham descriptors (E/S/A/B/V) — if a reliable value isn't known, value='' and provenance='not_reported'.",
-            "8. Extract all default/shared reaction conditions that apply broadly across the paper (not tied to one specific material/oxidant/micropollutant) into 'generalConditions', only if the text explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume). These come from THIS paper only — provenance='reported', never looked_up.",
-            "9. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
-            "10. If a paper-specific property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
-            "11. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 6-7), and only when clearly labeled provenance='looked_up' with its basis stated.",
-            "",
-            "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
-            "",
-            "Paper text:",
-            clip(paperText, 150000),
-          ].join("\n\n"),
-        });
+          )
+          .describe(
+            "Every catalyst, support, and precursor actually named in THIS excerpt.",
+          ),
+        oxidants: z
+          .array(
+            z.object({
+              name: z
+                .string()
+                .describe(
+                  "Exact oxidant name as referred to in the paper, e.g. 'Peracetic acid', 'H2O2', 'Persulfate'",
+                ),
+              values: z
+                .array(fieldValueSchema)
+                .describe(
+                  "One entry for EACH of these REQUIRED properties — 'Chemical formula/species', 'MW', 'O-O bond dissociation energy', 'Standard reduction potential' (name the relevant half-reaction), 'pKa' — PLUS any other physicochemical property reported for this oxidant. These are universal physicochemical constants: if not stated in this excerpt, you MAY use provenance='looked_up' from established chemistry knowledge for the EXACT chemical species involved (state that species in conversionNote). If the oxidant has no O-O bond, value='Not applicable' with provenance='not_applicable' for that entry.",
+                ),
+            }),
+          )
+          .describe("Every oxidant actually named in THIS excerpt."),
+        micropollutants: z
+          .array(
+            z.object({
+              name: z
+                .string()
+                .describe(
+                  "Exact micropollutant / target compound name as referred to in the paper, e.g. 'Carbamazepine'",
+                ),
+              values: z
+                .array(fieldValueSchema)
+                .describe(
+                  "One entry for EACH of these REQUIRED properties — 'MW', 'LogKow', 'E', 'S', 'A', 'B', 'V' (Abraham solvation/LSER descriptors) — PLUS any other physicochemical property reported for this micropollutant. These are universal physicochemical constants: if not stated in this excerpt, you MAY fill it from reliable established chemistry/literature knowledge with provenance='looked_up'. Never invent E/S/A/B/V — if a reliable value cannot be established, value='' and provenance='not_reported'.",
+                ),
+            }),
+          )
+          .describe(
+            "Every micropollutant / target pollutant actually named in THIS excerpt.",
+          ),
+        generalConditions: z
+          .array(fieldValueSchema)
+          .describe(
+            "Paper-wide default/fixed reaction conditions NOT tied to one specific material/oxidant/micropollutant — e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume, HPLC wavelength, column type, flow rate — ONLY if THIS excerpt explicitly frames them as a general/shared condition (e.g. in Materials & Methods, or a figure caption that says 'unless otherwise noted').",
+          ),
+        notes: z
+          .string()
+          .describe(
+            "Short note on anything ambiguous in THIS excerpt, or empty string",
+          ),
+      });
 
-        return Response.json(object as Record<string, unknown>);
+      let chunkFailures = 0;
+
+      async function scanPaperContextChunk(
+        text: string,
+        index: number,
+      ): Promise<PaperContextChunkResult> {
+        const empty: PaperContextChunkResult = {
+          materials: [],
+          oxidants: [],
+          micropollutants: [],
+          generalConditions: [],
+          notes: "",
+        };
+        try {
+          const { object } = await retryStreamObject(
+            {
+              model: MODEL,
+              maxOutputTokens: 8000,
+              output: Output.object({ schema: paperContextSchema }),
+              prompt: [
+                "You are building a structured reference context (paper context) from ONE EXCERPT of a larger scientific paper, covering four kinds of entities: materials, oxidants, micropollutants, and general reaction conditions.",
+                "",
+                "IMPORTANT: this excerpt is only PART of the full paper — text may start/end mid-sentence, and an entity named here may have more of its properties reported elsewhere in the paper (in another excerpt you can't see). That's expected: only report what THIS excerpt actually states, and don't worry about completeness across the whole paper — the excerpts are merged together afterwards.",
+                "The excerpt may also be part of a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) — treat it with EQUAL weight as the main text: SI commonly holds exactly the characterization values (SBET, pHpzc, oxidant MW, LogKow...) this task needs.",
+                "",
+                "INSTRUCTIONS:",
+                "1. Identify every catalyst, support, and precursor named in THIS excerpt, and list it under 'materials'. Do not list a material unless this excerpt actually names it.",
+                "2. Identify every oxidant named in THIS excerpt, and list it under 'oxidants'.",
+                "3. Identify every micropollutant / target pollutant named in THIS excerpt, and list it under 'micropollutants'.",
+                "4. For every material you list, you MUST emit one entry for each REQUIRED property (Support type, Size, SBET, Pore volume, Average pore size, pHpzc, 2Theta) — never silently skip one just because it's absent from this excerpt, emit it with value='' and provenance='not_reported' instead. Plus extract every OTHER characterization property this excerpt reports for it (elemental composition, crystallite size, rate constant, etc.). These are all this material's OWN measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them.",
+                "5. For every oxidant you list, you MUST emit one entry for each REQUIRED property (Chemical formula/species, MW, O-O bond dissociation energy, Standard reduction potential, pKa), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants for the oxidant species itself (not measured by this paper's authors): if this excerpt doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species. If the oxidant has no O-O bond, report that property as value='Not applicable', provenance='not_applicable'.",
+                "6. For every micropollutant you list, you MUST emit one entry for each REQUIRED property (MW, LogKow, E, S, A, B, V), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants: if this excerpt doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent Abraham descriptors (E/S/A/B/V) — if a reliable value isn't known, value='' and provenance='not_reported'.",
+                "7. Extract default/shared reaction conditions into 'generalConditions', only if THIS excerpt explicitly frames them as default/shared (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume). These come from THIS paper only — provenance='reported', never looked_up.",
+                "8. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
+                "9. If a paper-specific property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
+                "10. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 5-6), and only when clearly labeled provenance='looked_up' with its basis stated.",
+                "11. If this excerpt names no material, oxidant, or micropollutant at all, return empty arrays for those — do not force an entry.",
+                "",
+                "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
+                "",
+                `Excerpt ${index + 1} of ${chunks.length} (paper split into sections for processing):`,
+                text,
+              ].join("\n\n"),
+            },
+            1, // small call now — 1 retry is plenty
+            taskDeadline,
+          );
+          return object as PaperContextChunkResult;
+        } catch (err) {
+          // One slow/failed section shouldn't sink the whole scan — log it,
+          // skip it, and let the rest of the paper's context still come back.
+          chunkFailures++;
+          console.error(`extract/paper_context chunk ${index} failed:`, err);
+          return empty;
+        }
+      }
+
+      try {
+        const chunkResults = await mapWithConcurrency(
+          chunks,
+          PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS,
+          scanPaperContextChunk,
+        );
+
+        const materials = mergeEntityLists(
+          chunkResults.flatMap((r) => r.materials ?? []),
+        );
+        const oxidants = mergeEntityLists(
+          chunkResults.flatMap((r) => r.oxidants ?? []),
+        );
+        const micropollutants = mergeEntityLists(
+          chunkResults.flatMap((r) => r.micropollutants ?? []),
+        );
+        const generalConditions = chunkResults.reduce(
+          (acc, r) => mergeFieldValueArrays(acc, r.generalConditions ?? []),
+          [] as LooseFieldValue[],
+        );
+        const notes = chunkResults
+          .map((r) => r.notes?.trim())
+          .filter((n): n is string => Boolean(n))
+          .join(" ");
+
+        return Response.json({
+          materials,
+          oxidants,
+          micropollutants,
+          generalConditions,
+          notes,
+          // Lets the front-end optionally warn the user that a few sections
+          // of a very long paper couldn't be scanned in time, instead of
+          // silently returning an incomplete context with no explanation.
+          ...(chunkFailures > 0
+            ? { partial: true, chunkFailures, totalChunks: chunks.length }
+            : {}),
+        });
       } catch (err) {
         console.error("extract/paper_context failed:", err);
         if (err instanceof DeadlineExceededError) {
