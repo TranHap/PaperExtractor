@@ -2,17 +2,27 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 
-export const runtime = "edge";
+// IMPORTANT: this route does long-running LLM orchestration (several
+// sequential/parallel model calls per request), which does not fit Vercel's
+// Edge runtime — Edge Functions on Vercel have a low, effectively
+// non-configurable execution ceiling regardless of `maxDuration` below, so
+// the platform was silently killing the function mid-response (browser sees
+// a raw non-JSON 502/504 instead of our own JSON error). Node.js serverless
+// functions on Vercel DO honor `maxDuration` (60s on Hobby, up to 300s on
+// Pro), so we run there instead and size our own internal deadline off that
+// real, enforced number.
+export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const openaiProvider = createOpenAI();
 const MODEL = openaiProvider.chat("gpt-4.1-mini");
 
 // Self-imposed abort budget for a single request. Kept a few seconds under
-// `maxDuration` above (the actual platform-enforced limit for this route) so
-// we can still return a clean JSON error instead of letting the platform
-// kill the function mid-response and hand the browser a raw timeout page.
-const EDGE_BUDGET_MS = 53_000;
+// `maxDuration` above (the actual platform-enforced limit for this route, now
+// that we run on the Node.js runtime — see comment above) so we can still
+// return a clean JSON error instead of letting the platform kill the
+// function mid-response and hand the browser a raw timeout page.
+const EDGE_BUDGET_MS = 55_000;
 
 class DeadlineExceededError extends Error {
   constructor(
@@ -33,8 +43,8 @@ async function retryStreamObject(
   for (let attempt = 0; attempt <= retries; attempt++) {
     const remaining = deadline - Date.now();
     // Don't start another attempt we have no realistic chance of finishing —
-    // failing fast here with clean JSON beats letting Netlify's own 40s
-    // cutoff hand the browser a raw HTML 504 instead.
+    // failing fast here with clean JSON beats letting the platform's own
+    // hard timeout hand the browser a raw HTML 502/504 instead.
     if (remaining < 4000) {
       throw lastError ?? new DeadlineExceededError();
     }
@@ -121,7 +131,7 @@ function clip(text: string, max = 90000) {
 // parallel) keeps every individual model call small on BOTH input and output,
 // so each one reliably finishes in a few seconds — instead of one giant call
 // that has to describe every figure/panel of an entire paper and can easily
-// run past Netlify's 40s Edge Function cutoff for papers with many figures.
+// run past the platform's own hard timeout for papers with many figures.
 
 // Splits text into overlapping chunks, preferring to break at a paragraph or
 // sentence boundary near the target size so a figure caption isn't sliced
@@ -273,6 +283,34 @@ function keysLikelyMatch(a: string, b: string): boolean {
   return false;
 }
 
+function tokenize(s: string): Set<string> {
+  return new Set(
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 2),
+  );
+}
+
+// Looser than keysLikelyMatch's contiguous-substring check — needed because
+// the same entity can get a full descriptive name in one chunk (e.g.
+// "CuFeO2 rhombohedral crystals (RCs)") and just its short form in another
+// ("CuFeO2 RCs"), and the extra words in between break substring matching
+// even though every meaningful word of the short form is present in the
+// long form. Matches when every token of the shorter name appears somewhere
+// in the longer name's token set.
+function namesLikelyMatch(a: string, b: string): boolean {
+  if (keysLikelyMatch(a, b)) return true;
+  const ta = tokenize(a);
+  const tb = tokenize(b);
+  if (ta.size === 0 || tb.size === 0) return false;
+  const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  for (const t of small) {
+    if (!big.has(t)) return false;
+  }
+  return true;
+}
+
 type LooseFieldValue = {
   name: string;
   value: string;
@@ -387,9 +425,12 @@ function mergeFieldValueArrays(
 }
 
 // Merges entity lists (materials/oxidants/micropollutants) across chunks:
-// same entity named slightly differently in two chunks (per keysLikelyMatch)
-// collapses into one entry, with its values merged via mergeFieldValueArrays
-// and 'role' kept from whichever chunk set it first.
+// same entity named slightly differently in two chunks (per namesLikelyMatch)
+// collapses into one entry, with its values merged via mergeFieldValueArrays,
+// 'role' kept from whichever chunk set it first, and the longer/more
+// descriptive of the two names kept as the display name (chunk order is
+// non-deterministic under concurrency, so we can't just keep "whichever
+// came first").
 function mergeEntityLists<
   T extends { name: string; role?: string; values: LooseFieldValue[] },
 >(all: T[]): T[] {
@@ -397,7 +438,7 @@ function mergeEntityLists<
   const byKey = new Map<string, T>();
   for (const e of all) {
     if (!e?.name?.trim()) continue;
-    const matchedKey = order.find((k) => keysLikelyMatch(k, e.name));
+    const matchedKey = order.find((k) => namesLikelyMatch(k, e.name));
     if (!matchedKey) {
       order.push(e.name);
       byKey.set(e.name, { ...e, values: [...(e.values ?? [])] });
@@ -406,6 +447,7 @@ function mergeEntityLists<
     const existing = byKey.get(matchedKey)!;
     byKey.set(matchedKey, {
       ...existing,
+      name: e.name.length > existing.name.length ? e.name : existing.name,
       role: existing.role || e.role,
       values: mergeFieldValueArrays(existing.values, e.values ?? []),
     });
@@ -518,9 +560,9 @@ export async function POST(req: Request) {
       // easily run past it for long/detailed papers.
       const taskDeadline = Date.now() + EDGE_BUDGET_MS;
 
-      const PAPER_CONTEXT_CHUNK_SIZE = 12000;
-      const PAPER_CONTEXT_CHUNK_OVERLAP = 800;
-      const PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS = 12;
+      const PAPER_CONTEXT_CHUNK_SIZE = 7000;
+      const PAPER_CONTEXT_CHUNK_OVERLAP = 500;
+      const PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS = 16;
       const MAX_TOTAL_PAPER_CHARS = 200_000;
 
       const chunks = chunkText(
@@ -528,6 +570,107 @@ export async function POST(req: Request) {
         PAPER_CONTEXT_CHUNK_SIZE,
         PAPER_CONTEXT_CHUNK_OVERLAP,
       );
+
+      // --- Entity-naming pre-pass ---
+      //
+      // Chunks below run independently/in parallel, so nothing stops two
+      // different chunks from naming the SAME material/oxidant/micropollutant
+      // differently (e.g. one chunk sees its full descriptive name, another
+      // only sees a later abbreviation) — and once that happens, no amount of
+      // fuzzy string-matching in mergeEntityLists can reliably tell that
+      // apart from two genuinely different entities. So before scanning
+      // chunks for property VALUES, we run one quick, cheap, whole-paper pass
+      // whose only job is to name every distinct entity once — its output is
+      // tiny (just names/roles, not property tables) so it stays fast even
+      // over the full paper text — and hand that canonical name list to every
+      // chunk call below so they all refer to the same entity the same way.
+      const entityNamesSchema = z.object({
+        materials: z
+          .array(
+            z.object({
+              name: z.string().describe("Canonical exact name for this material as used in the paper"),
+              role: z
+                .string()
+                .describe(
+                  "Role of this material in the study, e.g. 'catalyst', 'precursor', 'support', or empty string",
+                ),
+            }),
+          )
+          .describe(
+            "Every DISTINCT catalyst, support, and precursor named anywhere in the paper — one entry per real-world entity, not per mention.",
+          ),
+        oxidants: z
+          .array(z.object({ name: z.string().describe("Canonical exact name for this oxidant") }))
+          .describe("Every DISTINCT oxidant named anywhere in the paper."),
+        micropollutants: z
+          .array(
+            z.object({
+              name: z.string().describe("Canonical exact name for this micropollutant / target compound"),
+            }),
+          )
+          .describe(
+            "Every DISTINCT micropollutant / target pollutant named anywhere in the paper.",
+          ),
+      });
+
+      type EntityNames = {
+        materials: { name: string; role?: string }[];
+        oxidants: { name: string }[];
+        micropollutants: { name: string }[];
+      };
+
+      let knownEntities: EntityNames = {
+        materials: [],
+        oxidants: [],
+        micropollutants: [],
+      };
+      const namingPassStart = Date.now();
+      try {
+        const { object } = await retryStreamObject(
+          {
+            model: MODEL,
+            maxOutputTokens: 3000,
+            output: Output.object({ schema: entityNamesSchema }),
+            prompt: [
+              "This is a NAMING-ONLY pass over a scientific paper — do NOT extract any property values, just identify every distinct entity.",
+              "List every DISTINCT catalyst/support/precursor (as 'materials'), oxidant, and micropollutant/target-pollutant named anywhere in this paper.",
+              "One entry per distinct real-world entity — if the paper introduces a material with a full descriptive name and later refers to it by a short abbreviation (e.g. 'CuFeO2 rhombohedral crystals (RCs)' later called just 'RCs' or 'CuFeO2 RCs'), that is ONE entity: pick whichever exact form the paper uses MOST OFTEN as its canonical 'name'.",
+              "",
+              "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
+              "",
+              "Paper text:",
+              clip(paperText, MAX_TOTAL_PAPER_CHARS),
+            ].join("\n\n"),
+          },
+          1,
+          taskDeadline,
+        );
+        knownEntities = object as EntityNames;
+        console.log(
+          `[paper_context DEBUG] naming pass took ${Date.now() - namingPassStart}ms: materials=${knownEntities.materials.length} oxidants=${knownEntities.oxidants.length} micropollutants=${knownEntities.micropollutants.length}`,
+        );
+      } catch (err) {
+        // Naming pass is a best-effort consistency aid, not a hard
+        // requirement — if it fails/times out, fall back to letting each
+        // chunk name entities on its own (mergeEntityLists' fuzzy matching
+        // below still catches the easy cases).
+        console.error(
+          "extract/paper_context entity-naming pass failed (continuing without it):",
+          err,
+        );
+      }
+
+      const knownEntitiesBlock = [
+        knownEntities.materials.length > 0
+          ? `Materials: ${knownEntities.materials.map((m) => `"${m.name}"${m.role ? ` (${m.role})` : ""}`).join(", ")}`
+          : "Materials: (none identified)",
+        knownEntities.oxidants.length > 0
+          ? `Oxidants: ${knownEntities.oxidants.map((o) => `"${o.name}"`).join(", ")}`
+          : "Oxidants: (none identified)",
+        knownEntities.micropollutants.length > 0
+          ? `Micropollutants: ${knownEntities.micropollutants.map((m) => `"${m.name}"`).join(", ")}`
+          : "Micropollutants: (none identified)",
+      ].join("\n");
 
       const paperContextSchema = z.object({
         materials: z
@@ -624,10 +767,13 @@ export async function POST(req: Request) {
                 "IMPORTANT: this excerpt is only PART of the full paper — text may start/end mid-sentence, and an entity named here may have more of its properties reported elsewhere in the paper (in another excerpt you can't see). That's expected: only report what THIS excerpt actually states, and don't worry about completeness across the whole paper — the excerpts are merged together afterwards.",
                 "The excerpt may also be part of a merged 'SUPPLEMENTARY INFORMATION' section (from a separate SI PDF) — treat it with EQUAL weight as the main text: SI commonly holds exactly the characterization values (SBET, pHpzc, oxidant MW, LogKow...) this task needs.",
                 "",
+                "KNOWN ENTITIES — already identified from a first pass over the WHOLE paper. If an entity you find in this excerpt matches one of these (even if THIS excerpt calls it something slightly different, e.g. a different abbreviation), you MUST use the EXACT name string given here as its 'name', so results merge correctly across excerpts. Only use a name NOT in this list if this excerpt clearly describes an entity genuinely absent from it.",
+                knownEntitiesBlock,
+                "",
                 "INSTRUCTIONS:",
-                "1. Identify every catalyst, support, and precursor named in THIS excerpt, and list it under 'materials'. Do not list a material unless this excerpt actually names it.",
-                "2. Identify every oxidant named in THIS excerpt, and list it under 'oxidants'.",
-                "3. Identify every micropollutant / target pollutant named in THIS excerpt, and list it under 'micropollutants'.",
+                "1. Identify every catalyst, support, and precursor named in THIS excerpt, and list it under 'materials' (using the matching KNOWN ENTITIES name when applicable). Do not list a material unless this excerpt actually names it.",
+                "2. Identify every oxidant named in THIS excerpt, and list it under 'oxidants' (using the matching KNOWN ENTITIES name when applicable).",
+                "3. Identify every micropollutant / target pollutant named in THIS excerpt, and list it under 'micropollutants' (using the matching KNOWN ENTITIES name when applicable).",
                 "4. For every material you list, you MUST emit one entry for each REQUIRED property (Support type, Size, SBET, Pore volume, Average pore size, pHpzc, 2Theta) — never silently skip one just because it's absent from this excerpt, emit it with value='' and provenance='not_reported' instead. Plus extract every OTHER characterization property this excerpt reports for it (elemental composition, crystallite size, rate constant, etc.). These are all this material's OWN measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them.",
                 "5. For every oxidant you list, you MUST emit one entry for each REQUIRED property (Chemical formula/species, MW, O-O bond dissociation energy, Standard reduction potential, pKa), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants for the oxidant species itself (not measured by this paper's authors): if this excerpt doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species. If the oxidant has no O-O bond, report that property as value='Not applicable', provenance='not_applicable'.",
                 "6. For every micropollutant you list, you MUST emit one entry for each REQUIRED property (MW, LogKow, E, S, A, B, V), plus any other physicochemical property this excerpt reports. These are universal physicochemical constants: if this excerpt doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent Abraham descriptors (E/S/A/B/V) — if a reliable value isn't known, value='' and provenance='not_reported'.",
@@ -646,7 +792,11 @@ export async function POST(req: Request) {
             1, // small call now — 1 retry is plenty
             taskDeadline,
           );
-          return object as PaperContextChunkResult;
+          const r = object as PaperContextChunkResult;
+          console.log(
+            `[paper_context DEBUG] chunk ${index + 1}/${chunks.length}: materials=${r.materials?.length ?? 0} oxidants=${r.oxidants?.length ?? 0} micropollutants=${r.micropollutants?.length ?? 0} generalConditions=${r.generalConditions?.length ?? 0}`,
+          );
+          return r;
         } catch (err) {
           // One slow/failed section shouldn't sink the whole scan — log it,
           // skip it, and let the rest of the paper's context still come back.
@@ -719,7 +869,7 @@ export async function POST(req: Request) {
 
       // One shared deadline for the WHOLE task — every chunk call below races
       // against this same absolute time, so running them in parallel doesn't
-      // silently push the total wall-clock time past Netlify's 40s cutoff.
+      // silently push the total wall-clock time past the platform's timeout.
       const taskDeadline = Date.now() + EDGE_BUDGET_MS;
 
       const CHUNK_SIZE = 9000;
