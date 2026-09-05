@@ -2,27 +2,26 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
 
-// IMPORTANT: this route does long-running LLM orchestration (several
-// sequential/parallel model calls per request), which does not fit Vercel's
-// Edge runtime — Edge Functions on Vercel have a low, effectively
-// non-configurable execution ceiling regardless of `maxDuration` below, so
-// the platform was silently killing the function mid-response (browser sees
-// a raw non-JSON 502/504 instead of our own JSON error). Node.js serverless
-// functions on Vercel DO honor `maxDuration` (60s on Hobby, up to 300s on
-// Pro), so we run there instead and size our own internal deadline off that
-// real, enforced number.
-export const runtime = "nodejs";
+// This app is deployed on Netlify. Netlify's regular (Node.js) Functions
+// have a short execution ceiling (~10-26s depending on plan) — nowhere near
+// enough for the LLM calls this route makes — while Netlify EDGE Functions
+// tolerate roughly 40s in practice before the platform kills the invocation
+// outright (undocumented exact number, empirically observed: the browser
+// gets a raw non-JSON 502 instead of our own JSON error once exceeded). So
+// this route intentionally stays on the edge runtime; `maxDuration` below is
+// a Vercel-specific route config and is a harmless no-op on Netlify, kept
+// only in case this ever moves there.
+export const runtime = "edge";
 export const maxDuration = 60;
 
 const openaiProvider = createOpenAI();
 const MODEL = openaiProvider.chat("gpt-4.1-mini");
 
 // Self-imposed abort budget for a single request. Kept a few seconds under
-// `maxDuration` above (the actual platform-enforced limit for this route, now
-// that we run on the Node.js runtime — see comment above) so we can still
-// return a clean JSON error instead of letting the platform kill the
+// Netlify's real ~40s Edge Function cutoff (see comment above) so we can
+// still return a clean JSON error instead of letting the platform kill the
 // function mid-response and hand the browser a raw timeout page.
-const EDGE_BUDGET_MS = 55_000;
+const EDGE_BUDGET_MS = 34_000;
 
 class DeadlineExceededError extends Error {
   constructor(
