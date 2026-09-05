@@ -36,7 +36,12 @@ export default function RootLayout({
       translate="no"
       className={`bg-background ${geistSans.variable} ${geistMono.variable}`}
     >
-      <body className="antialiased font-sans">
+      {/* suppressHydrationWarning: browser extensions (Grammarly, password
+          managers, etc.) inject attributes onto <body> before React
+          hydrates, which otherwise logs a scary but harmless hydration
+          mismatch warning on every load. This only ignores mismatches on
+          THIS node's own attributes, not on its children. */}
+      <body className="antialiased font-sans" suppressHydrationWarning>
         <script
           dangerouslySetInnerHTML={{
             __html: `

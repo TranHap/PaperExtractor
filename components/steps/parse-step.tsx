@@ -25,6 +25,7 @@ export function ParseStep() {
   const [progress, setProgress] = useState<ParseProgress | null>(null);
   const [supLoading, setSupLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const supInputRef = useRef<HTMLInputElement>(null);
 
@@ -40,6 +41,7 @@ export function ParseStep() {
 
   async function handleMainFile(file: File) {
     setError(null);
+    setWarning(null);
     setLoading(true);
     setProgress(null);
     try {
@@ -47,6 +49,18 @@ export function ParseStep() {
       setMainPaper(result);
       setSupplements([]);
       setPaper(result);
+      // Text extraction and page-image rendering are independent — a page
+      // can fail to render (e.g. the browser's canvas budget is exhausted
+      // after many PDFs parsed in this tab) while its text still comes
+      // through fine, so this wouldn't otherwise surface as an error at
+      // all. Later steps (Digitize's page picker) silently have nothing to
+      // show when that happens, so flag it here instead of leaving the user
+      // to guess why.
+      if (result.pages > 0 && result.pageImages.every((img) => !img)) {
+        setWarning(
+          "Đã đọc được text nhưng không tạo được ảnh trang nào (có thể do đã mở quá nhiều PDF trong tab này). Bước Digitize sẽ thiếu ảnh để số hóa — thử tải lại trang (F5) rồi upload lại.",
+        );
+      }
     } catch (e) {
       console.log(
         "[v0] pdf parse error:",
@@ -163,6 +177,12 @@ export function ParseStep() {
               <p className="mt-3 flex items-center gap-1.5 text-sm text-destructive">
                 <AlertCircle className="size-4" />
                 {error}
+              </p>
+            )}
+            {warning && (
+              <p className="mt-3 flex items-center gap-1.5 text-sm text-amber-600 dark:text-amber-400">
+                <AlertCircle className="size-4" />
+                {warning}
               </p>
             )}
           </div>

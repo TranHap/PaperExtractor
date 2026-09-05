@@ -102,6 +102,55 @@ function extractStructuredText(items: unknown[]): string {
   return result.join("\n");
 }
 
+// Groups consecutive "## "-tagged (large-font) lines from the first page
+// into candidate title blocks — a wrapped multi-line title produces several
+// heading lines in a row, which need re-joining into one string. Picks the
+// LONGEST candidate group, since running headers/journal branding rendered
+// in the same large font tend to be short one-liners while the actual title
+// is usually the longest such block near the top of the page.
+function extractHeadingTitle(text: string): string | undefined {
+  const groups: string[] = [];
+  let current: string[] = [];
+  for (const line of text.split("\n")) {
+    if (line.startsWith("## ")) {
+      current.push(line.slice(3).trim());
+    } else if (current.length) {
+      groups.push(current.join(" "));
+      current = [];
+    }
+  }
+  if (current.length) groups.push(current.join(" "));
+  return groups
+    .filter((g) => g.length > 15 && g.length < 300)
+    .sort((a, b) => b.length - a.length)[0];
+}
+
+// Fallback when the page has no usable heading markup (e.g. a scanned PDF
+// with uniform font sizes): grabs the first sentence-ish chunk of a
+// plausible title length. Much less reliable than extractHeadingTitle since
+// it has no way to distinguish the actual title from a running header or
+// journal identifier that happens to fall in the same length range.
+function extractFirstSentenceTitle(text: string): string | undefined {
+  return text
+    .split(/[.\n]/)
+    .map((s) => s.trim())
+    .find((s) => s.length > 15 && s.length < 200);
+}
+
+// Some publisher PDF pipelines (Arbortext/iText, common for ACS journals)
+// set the embedded metadata Title field to an internal manuscript ID + page
+// range (e.g. "es5b05974 1..9") instead of the real paper title. Trusting
+// that blindly showed garbage as the "predicted title" — this rejects
+// anything that doesn't read like natural-language prose so we fall through
+// to guessing from the page text instead.
+function looksLikeRealTitle(s: string): boolean {
+  const t = s.trim();
+  if (t.length < 15) return false;
+  if (/^\S+\s+\d+\.\.\d+$/.test(t)) return false; // "es5b05974 1..9"-style
+  const words = t.split(/\s+/).filter(Boolean);
+  return words.length >= 3;
+}
+
 export async function parsePdf(
   file: File,
   onProgress?: (p: ParseProgress) => void,
@@ -119,7 +168,7 @@ export async function parsePdf(
   try {
     const meta = await doc.getMetadata();
     const info = meta?.info as { Title?: string } | undefined;
-    if (info?.Title) title = info.Title;
+    if (info?.Title && looksLikeRealTitle(info.Title)) title = info.Title;
   } catch {
     // ignore metadata errors
   }
@@ -142,18 +191,33 @@ export async function parsePdf(
     if (context) {
       await page.render({ canvasContext: context, viewport }).promise;
       pageImages.push(canvas.toDataURL("image/jpeg", 0.85));
+      // Release the canvas's (GPU-backed) pixel buffer right away instead of
+      // waiting for GC. Re-parsing PDFs repeatedly in one long-lived tab
+      // (re-uploads, retries) otherwise accumulates canvas memory until the
+      // browser starts silently returning null from getContext("2d") — text
+      // extraction doesn't use canvas, so that failure was invisible: pages
+      // still parsed "successfully" with zero page images, and every step
+      // downstream that needs one (Digitize's page picker/auto-pick) was
+      // left with nothing to show and no explanation why.
+      canvas.width = 0;
+      canvas.height = 0;
+    } else {
+      // Keep pageImages aligned 1:1 with page number even when rendering
+      // fails for just this one page — pushing nothing here would shift
+      // every later page's image down by one slot, so e.g. page 5's auto-
+      // picked "image" would silently actually be page 6's.
+      pageImages.push("");
+      console.warn(
+        `[parsePdf] canvas 2D context unavailable for page ${i}/${total} — page image will be missing. This usually means too many canvases have been created in this tab; reloading the page frees them.`,
+      );
     }
     page.cleanup();
   }
 
   if (!title) {
     const firstPage = fullText.split("[Page 2]")[0] || fullText;
-    const candidate = firstPage
-      .replace("[Page 1]", "")
-      .split(/[.\n]/)
-      .map((s) => s.trim())
-      .find((s) => s.length > 15 && s.length < 200);
-    title = candidate;
+    const stripped = firstPage.replace("[Page 1]", "");
+    title = extractHeadingTitle(stripped) ?? extractFirstSentenceTitle(stripped);
   }
 
   return {
