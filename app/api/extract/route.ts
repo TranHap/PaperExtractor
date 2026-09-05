@@ -54,6 +54,14 @@ async function retryStreamObject(
 
     try {
       const result = streamText({
+        // Deterministic extraction, not creative writing: every task here is
+        // "read the text and report what's there," so we want the model's
+        // top-probability answer every time, not sampled variety. Without
+        // this, re-running the SAME extraction on the SAME paper can find a
+        // value one run and miss it the next, purely from sampling noise —
+        // easy to mistake for a prompt bug when it's actually just
+        // temperature. `...args` after it lets a specific call override.
+        temperature: 0,
         ...args,
         model: MODEL,
         abortSignal: controller.signal,
@@ -1078,7 +1086,7 @@ export async function POST(req: Request) {
             "- 'Digitization columns' below identify which schema fields correspond to the digitized x, y, and series output columns. These are structural output columns from digitization, not values extracted from paper text — treat them as OFF-LIMITS exactly like changingVariable/curveLabels.",
             "",
             "RULES:",
-            "1. FIRST, for every field in 'Fields', decide whether it semantically matches one of the Figure's already-determined 'changingVariable' entries or its 'curveLabels' quantity — match by meaning, not exact string (e.g. field 'pH' matches a curveLabels quantity described as 'Initial pH'). Every field name you classify this way MUST be added to 'changingFieldNames', using the exact 'name' string as given in 'Fields'. ",
+            "1. FIRST, for every field in 'Fields', decide whether it semantically matches one of the Figure's already-determined 'changingVariable' entries or its 'curveLabels' quantity — match by meaning, not exact string (e.g. field 'pH' matches a curveLabels quantity described as 'Initial pH'). Every field name you classify this way MUST be added to 'changingFieldNames', using the exact 'name' string as given in 'Fields'. The ONLY evidence allowed for this classification is the literal 'changingVariable' array and 'curveLabels' value given below for THIS figure — do NOT classify a field as changing just because that same quantity happens to be swept across OTHER figures/experiments elsewhere in the paper, or because it seems like the kind of thing that COULD vary in general. A field absent from THIS figure's 'changingVariable'/'curveLabels' is a fixed variable for THIS figure, full stop, even if some other figure in the paper varies it.",
             "2. The fields mapped to digitization output columns ('digitizationXField', 'digitizationYField', 'digitizationSeriesField') are OFF-LIMITS — they represent the structural columns of the digitized dataset, not values extracted from paper text. Treat them exactly like changingVariable/curveLabels: return value = '' and confidence = 0, and add them to 'changingFieldNames'.",
             "3. If a field matches EITHER a 'changingVariable' entry OR the 'curveLabels' quantity OR is a digitization column — no matter whether it varies within each curve (axis) or between curves (series) — it is OFF-LIMITS: always return value = '' and confidence = 0 for that field. This applies with NO exceptions, even if the paper text states a seemingly fixed number for it (e.g. a total duration, an endpoint, or any other scalar) — that field belongs to the varying quantity for this figure and must stay empty here.",
             "4. For all OTHER fields — the FIXED VARIABLES, i.e. fields that do NOT match 'changingVariable' or 'curveLabels' — determine their value normally. Treat the Figure's caption/description as ground truth for this figure's specific condition, and ground the value in the figure metadata or the paper text (e.g. the experimental setup / methods section for conditions shared across figures such as material, oxidant, dosages, etc.).",
