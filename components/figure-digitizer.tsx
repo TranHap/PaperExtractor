@@ -962,7 +962,15 @@ export function FigureDigitizer({
     });
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
+    // @container (not a viewport breakpoint): this component gets embedded
+    // in a page-level 2-column grid, so its own "is there enough room for a
+    // side-by-side sidebar" question depends on the width IT actually gets,
+    // not the viewport. Using `lg:` here caused the image + calibration
+    // sidebar to force a 2-column split — squeezing the image into a ~300px
+    // sliver — at exactly the viewport widths (1280-1440px) where the page
+    // grid had already split into two columns, leaving this component with
+    // far less than half the screen to work with.
+    <div className="@container/digitizer grid gap-6 @3xl/digitizer:grid-cols-[1fr_280px]">
       <div>
         <div
           ref={wrapRef}
@@ -1116,12 +1124,14 @@ export function FigureDigitizer({
           </p>
         )}
 
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={zoomOut}
             disabled={scale <= MIN_SCALE}
+            title="Thu nhỏ"
+            aria-label="Thu nhỏ"
           >
             <ZoomOut className="size-3.5" />
           </Button>
@@ -1133,6 +1143,8 @@ export function FigureDigitizer({
             size="sm"
             onClick={zoomIn}
             disabled={scale >= MAX_SCALE}
+            title="Phóng to"
+            aria-label="Phóng to"
           >
             <ZoomIn className="size-3.5" />
           </Button>
@@ -1143,6 +1155,8 @@ export function FigureDigitizer({
             disabled={
               scale === MIN_SCALE && translate.x === 0 && translate.y === 0
             }
+            title="Về trạng thái xem gốc"
+            aria-label="Về trạng thái xem gốc"
           >
             <Maximize2 className="size-3.5" />
           </Button>
@@ -1150,14 +1164,20 @@ export function FigureDigitizer({
             variant={selectionMode ? "secondary" : "ghost"}
             size="sm"
             onClick={toggleSelectionMode}
+            title={
+              selectionMode
+                ? "Đang ở chế độ chọn nhiều điểm — bấm để tắt"
+                : "Chọn nhiều điểm (kéo chuột thành khung)"
+            }
+            aria-label="Chọn nhiều điểm bằng khung kéo chuột"
           >
             <Square className="size-3.5" />
           </Button>
-          <span className="text-xs text-muted-foreground">
-            Cuộn / chụm hai ngón để zoom · Kéo để di chuyển ảnh · Kéo điểm tham
-            chiếu hoặc điểm dữ liệu để chỉnh lại · Ctrl+Z hoàn tác
-          </span>
         </div>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Cuộn / chụm hai ngón để zoom · Kéo để di chuyển ảnh · Kéo điểm tham
+          chiếu hoặc điểm dữ liệu để chỉnh lại · Ctrl+Z hoàn tác
+        </p>
       </div>
 
       <aside className="flex flex-col gap-5">
@@ -1340,7 +1360,7 @@ export function FigureDigitizer({
       </aside>
 
       {value.points.length > 0 && (
-        <div className="lg:col-span-2">
+        <div className="@3xl/digitizer:col-span-2">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-medium">

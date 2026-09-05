@@ -79,7 +79,14 @@ export function ValuesEditor({ fields, values, onChange, seriesLabel }: ValuesEd
   }
 
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    // @container (not a viewport breakpoint): this editor gets embedded in
+    // layouts that are themselves already split into columns (e.g. the
+    // Digitize step's digitize/fill-values split), so a viewport-relative
+    // `md:` breakpoint would force 2 field columns based on the WHOLE
+    // page's width even when this editor's own column is much narrower —
+    // squeezing each field card (label, description, source quote) into a
+    // sliver. Container queries make it respond to its actual width instead.
+    <div className="@container/values-editor grid gap-4 @lg/values-editor:grid-cols-2">
       {fields.map((f) => {
         const v = byName.get(f.name)
         const validation = v?.value ? validateFieldValue(f, v.value) : { valid: true }
