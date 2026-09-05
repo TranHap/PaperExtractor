@@ -131,6 +131,20 @@ function persist(state: PersistedState) {
             imageUrl: "",
           }
         : null,
+      // Same reason as `digitization.imageUrl` above — each entry here also
+      // carries a full page-image data URL (hundreds of KB to a few MB).
+      // Missing this meant every figure ever digitized stayed in the
+      // persisted payload at full size, so a single keystroke anywhere that
+      // touches `digitizationByFigure` (e.g. renaming a series) re-serialized
+      // and wrote several figures' worth of image data to localStorage on
+      // EVERY keystroke — the actual cause of the Digitize step feeling
+      // laggy/unresponsive while typing.
+      digitizationByFigure: Object.fromEntries(
+        Object.entries(state.digitizationByFigure).map(([id, d]) => [
+          id,
+          { ...d, imageUrl: "" },
+        ]),
+      ),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
