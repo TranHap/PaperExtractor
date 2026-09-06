@@ -60,15 +60,6 @@ interface WorkflowState {
   setDigitizationByFigure: (d: Record<string, Digitization>) => void;
 
   /**
-   * Figure ids the user has already exported from the Dataset step. Once a
-   * figure has been downloaded, it's excluded from the combined dataset so
-   * moving on to digitize the next figure doesn't re-merge work that was
-   * already saved. The user can pull them back in from the Dataset step.
-   */
-  exportedFigureIds: string[];
-  setExportedFigureIds: (ids: string[]) => void;
-
-  /**
    * The CURRENT figure's extracted values + metadata. This is the single
    * source of truth for "what values does this figure have" — there used to
    * be a second, parallel `resolvedContext` state that duplicated the same
@@ -107,7 +98,6 @@ type PersistedState = {
   selectedFigure: FigureItem | null;
   digitization: Digitization | null;
   digitizationByFigure: Record<string, Digitization>;
-  exportedFigureIds: string[];
   figureContext: FigureContext | null;
   figureContextByFigure: Record<string, FigureContext>;
   paperCharacteristics: PaperCharacteristicsResult | null;
@@ -182,7 +172,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const [selectedFigure, setSelectedFigure] = useState<FigureItem | null>(null);
   const [digitization, setDigitization] = useState<Digitization | null>(null);
   const [digitizationByFigure, setDigitizationByFigure] = useState<Record<string, Digitization>>({});
-  const [exportedFigureIds, setExportedFigureIds] = useState<string[]>([]);
   const [figureContext, setFigureContext] = useState<FigureContext | null>(null);
   const [figureContextByFigure, setFigureContextByFigure] = useState<Record<string, FigureContext>>({});
   const [paperCharacteristics, setPaperCharacteristics] = useState<PaperCharacteristicsResult | null>(null);
@@ -200,7 +189,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setSelectedFigure(initial.selectedFigure ?? null);
       setDigitization(initial.digitization ?? null);
       setDigitizationByFigure(initial.digitizationByFigure ?? {});
-      setExportedFigureIds(initial.exportedFigureIds ?? []);
       setFigureContext(initial.figureContext ?? null);
       setFigureContextByFigure(initial.figureContextByFigure ?? {});
       setPaperCharacteristics(initial.paperCharacteristics ?? null);
@@ -224,7 +212,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setVariableFields([]);
       setDigitization(null);
       setDigitizationByFigure({});
-      setExportedFigureIds([]);
       setFigureContext(null);
       setFigureContextByFigure({});
       setPaperCharacteristics(null);
@@ -241,7 +228,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       selectedFigure,
       digitization,
       digitizationByFigure,
-      exportedFigureIds,
       figureContext,
       figureContextByFigure,
       paperCharacteristics,
@@ -259,7 +245,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     selectedFigure,
     digitization,
     digitizationByFigure,
-    exportedFigureIds,
     figureContext,
     figureContextByFigure,
     paperCharacteristics,
@@ -285,7 +270,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setSelectedFigure(null);
       setDigitization(null);
       setDigitizationByFigure({});
-      setExportedFigureIds([]);
       setFigureContext(null);
       setFigureContextByFigure({});
       setPaperCharacteristics(null);
@@ -318,8 +302,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setDigitization,
       digitizationByFigure,
       setDigitizationByFigure,
-      exportedFigureIds,
-      setExportedFigureIds,
       figureContext,
       setFigureContext,
       figureContextByFigure,
@@ -340,7 +322,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     selectedFigure,
     digitization,
     digitizationByFigure,
-    exportedFigureIds,
     figureContext,
     figureContextByFigure,
     paperCharacteristics,
