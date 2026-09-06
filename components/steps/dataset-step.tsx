@@ -139,17 +139,14 @@ export function DatasetStep() {
   }
 
   function exportCsv() {
-    const columns: { name: string; header: string; isStatus?: boolean }[] = [];
-    for (const name of baseNames) {
-      columns.push({ name, header: name });
-      columns.push({ name, header: `${name} [status]`, isStatus: true });
-    }
+    const columns: { name: string }[] = [];
+    for (const name of baseNames) columns.push({ name });
     const extraAxisNames = [xField, yField, seriesField].filter(
       (n): n is string => !!n && !baseNames.includes(n),
     );
-    for (const name of extraAxisNames) columns.push({ name, header: name });
+    for (const name of extraAxisNames) columns.push({ name });
 
-    const headers = ["Source", ...columns.map((c) => c.header)];
+    const headers = ["Source", ...columns.map((c) => c.name)];
 
     const rows: (string | number)[][] = [];
     for (const b of built) {
@@ -158,13 +155,6 @@ export function DatasetStep() {
       for (const p of b.dataset.points) {
         const row = columns.map((col) => {
           const { name } = col;
-          if (col.isStatus) {
-            const m = metaByName.get(name);
-            if (!m || !m.value?.trim()) return "";
-            const parts = [m.provenance ?? ""];
-            if (m.originalValue) parts.push(`orig: ${m.originalValue}`);
-            return parts.filter(Boolean).join("; ");
-          }
           if (name === xField) return p.x;
           if (name === yField) return p.y;
           if (name === seriesField) return p.series;
