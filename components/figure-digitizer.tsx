@@ -968,20 +968,17 @@ export function FigureDigitizer({
     });
 
   return (
-    // @container (not a viewport breakpoint): this component gets embedded
-    // in a page-level layout, so its own "is there enough room for a
-    // side-by-side sidebar" question depends on the width IT actually gets,
-    // not the viewport. Using `lg:` here caused the image + calibration
-    // sidebar to force a 2-column split — squeezing the image into a ~300px
-    // sliver — at exactly the viewport widths (1280-1440px) where the page
-    // grid had already split into two columns, leaving this component with
-    // far less than half the screen to work with.
+    // Side-by-side layout: the figure on the LEFT, and the calibration /
+    // series / "Thêm điểm" / column-name sidebar on the RIGHT — not stacked
+    // below it — so every control stays reachable while digitizing.
     //
-    // The sidebar (X/Y calibration, series list + "Thêm điểm", column names)
-    // must sit to the RIGHT of the figure — not stacked below it — so it stays
-    // reachable while digitizing. `items-start` keeps the sidebar from
-    // stretching so its `sticky` (below) works.
-    <div className="@container/digitizer grid items-start gap-6 @2xl/digitizer:grid-cols-[minmax(0,1fr)_300px]">
+    // We use a plain `lg:` viewport breakpoint (not a container query): the
+    // whole workflow is centered in a `max-w-6xl` column, so once the
+    // viewport is >= lg there is reliably enough room for a 1fr image plus a
+    // ~320px sidebar. Below lg the two simply stack.
+    //
+    // `items-start` keeps the sidebar from stretching so its `sticky` works.
+    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="min-w-0">
         <div
           ref={wrapRef}
@@ -1196,7 +1193,7 @@ export function FigureDigitizer({
        * page and click points near its bottom — otherwise "Thêm điểm" and the
        * series list scroll out of reach. Own scrollbar when the panel is
        * taller than the viewport. */}
-      <aside className="flex flex-col gap-5 @2xl/digitizer:sticky @2xl/digitizer:top-4 @2xl/digitizer:max-h-[calc(100vh-2rem)] @2xl/digitizer:overflow-y-auto @2xl/digitizer:pr-1">
+      <aside className="flex flex-col gap-5 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:pr-1">
         <div className="rounded-lg border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <h3 className="text-sm font-medium">Hiệu chỉnh trục X</h3>
@@ -1377,7 +1374,7 @@ export function FigureDigitizer({
       </aside>
 
       {value.points.length > 0 && (
-        <div className="@2xl/digitizer:col-span-2">
+        <div className="lg:col-span-2">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-medium">
