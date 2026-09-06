@@ -10,6 +10,8 @@ import {
   Check,
   ArrowRightCircle,
   PartyPopper,
+  Undo2,
+  CheckCircle2,
 } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
@@ -52,6 +54,8 @@ export function DatasetStep() {
     figures,
     digitizationByFigure,
     figureContextByFigure,
+    exportedFigureIds,
+    setExportedFigureIds,
     xField,
     yField,
     seriesField,
@@ -69,9 +73,21 @@ export function DatasetStep() {
     [figures, digitizationByFigure],
   );
 
+  // Figures already downloaded from this step are dropped from the combined
+  // dataset — digitizing another figure afterwards shouldn't re-merge work
+  // that's already been saved. They can be pulled back in below.
+  const activeFigures = useMemo(
+    () => completedFigures.filter((f) => !exportedFigureIds.includes(f.id)),
+    [completedFigures, exportedFigureIds],
+  );
+  const exportedFigures = useMemo(
+    () => completedFigures.filter((f) => exportedFigureIds.includes(f.id)),
+    [completedFigures, exportedFigureIds],
+  );
+
   const built: FigureBuild[] = useMemo(
     () =>
-      completedFigures.map((figure) => {
+      activeFigures.map((figure) => {
         const digit = digitizationByFigure[figure.id];
         const figCtx = figureContextByFigure[figure.id];
         const rawMerged = buildMerged(schema, [], figCtx?.values ?? []);
@@ -91,7 +107,7 @@ export function DatasetStep() {
         return { figure, rawMerged, dataset };
       }),
     [
-      completedFigures,
+      activeFigures,
       digitizationByFigure,
       figureContextByFigure,
       schema,
@@ -101,6 +117,13 @@ export function DatasetStep() {
       seriesField,
     ],
   );
+
+  function markBuiltExported() {
+    const ids = built.map((b) => b.figure.id);
+    const next = [...exportedFigureIds];
+    for (const id of ids) if (!next.includes(id)) next.push(id);
+    setExportedFigureIds(next);
+  }
 
   const baseNames = useMemo(() => {
     const schemaOrder = schema?.fields.map((f) => f.name) ?? [];
@@ -136,6 +159,7 @@ export function DatasetStep() {
       JSON.stringify(paperDataset, null, 2),
       "application/json",
     );
+    markBuiltExported();
   }
 
   function exportCsv() {
@@ -172,6 +196,7 @@ export function DatasetStep() {
       toCsv(headers, rows),
       "text/csv",
     );
+    markBuiltExported();
   }
 
   function goToNextFigure() {
@@ -202,7 +227,7 @@ export function DatasetStep() {
     <StepShell
       stepId="dataset"
       title="Dataset"
-      description="Toàn bộ figure đã số hóa của paper này, gộp thành một dataset duy nhất. Tải về JSON (đầy đủ ngữ cảnh từng figure) hoặc CSV (mỗi dòng là một điểm, kèm cột Source xác định paper + figure)."
+      description="Các figure đã số hóa nhưng chưa xuất, gộp thành một dataset. Sau khi tải JSON/CSV, những figure đó được đánh dấu 'đã xuất' và không gộp vào lần sau — bạn có thể đưa lại vào bên dưới."
       onBack={goBack}
       hideNext
     >
@@ -216,11 +241,19 @@ export function DatasetStep() {
             <p className="text-xs text-muted-foreground">{paperLabel}</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
               <Badge variant="outline" className="border-primary/40 text-primary">
-                {completedFigures.length}/{figures.length} figure
+                {built.length} figure chờ xuất
               </Badge>
               <Badge variant="outline" className="border-chart-2/40 text-chart-2">
                 {totalPoints} điểm
               </Badge>
+              {exportedFigures.length > 0 && (
+                <Badge
+                  variant="outline"
+                  className="border-muted-foreground/40 text-muted-foreground"
+                >
+                  {exportedFigures.length} figure đã xuất
+                </Badge>
+              )}
             </div>
           </div>
         </div>
@@ -265,9 +298,17 @@ export function DatasetStep() {
         )}
       </div>
 
+      {built.length === 0 && exportedFigures.length > 0 && (
+        <div className="mb-6 flex items-center gap-2 rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+          <CheckCircle2 className="size-4 shrink-0 text-primary" />
+          Tất cả figure đã số hóa đều đã được xuất. Số hóa figure mới, hoặc đưa
+          lại figure đã xuất ở dưới.
+        </div>
+      )}
+
       {built.length > 0 && (
         <div className="mb-6">
-          <h2 className="mb-3 text-sm font-medium">Các figure đã gộp</h2>
+          <h2 className="mb-3 text-sm font-medium">Các figure sẽ gộp vào file xuất</h2>
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead className="bg-muted/60 text-left">
@@ -310,9 +351,62 @@ export function DatasetStep() {
         </div>
       )}
 
+      {exportedFigures.length > 0 && (
+        <div className="mb-6">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm font-medium text-muted-foreground">
+              Figure đã xuất ({exportedFigures.length}) — không gộp vào file
+            </h2>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setExportedFigureIds(
+                  exportedFigureIds.filter(
+                    (id) => !exportedFigures.some((f) => f.id === id),
+                  ),
+                )
+              }
+            >
+              <Undo2 className="size-3.5" />
+              Đưa lại tất cả vào dataset
+            </Button>
+          </div>
+          <div className="overflow-hidden rounded-lg border border-dashed border-border">
+            <table className="w-full text-sm">
+              <tbody>
+                {exportedFigures.map((f) => (
+                  <tr key={f.id} className="border-t border-border first:border-t-0">
+                    <td className="px-4 py-2 font-medium text-muted-foreground">
+                      {f.label}
+                    </td>
+                    <td className="px-4 py-2 tabular-nums text-muted-foreground">
+                      {digitizationByFigure[f.id]?.points.length ?? 0} điểm
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setExportedFigureIds(
+                            exportedFigureIds.filter((id) => id !== f.id),
+                          )
+                        }
+                      >
+                        Đưa lại
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {combinedPoints.length > 0 && (
         <div className="mb-6">
-          <h2 className="mb-3 text-sm font-medium">Xem trước dữ liệu (toàn bộ paper)</h2>
+          <h2 className="mb-3 text-sm font-medium">Xem trước dữ liệu (figure chờ xuất)</h2>
           <ScatterPreview points={combinedPoints} series={combinedSeries} />
         </div>
       )}
