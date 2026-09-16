@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, ScanSearch, AlertCircle, Check } from "lucide-react";
+import { Loader2, ScanSearch, AlertCircle, Check, Plus } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { useWorkflow } from "@/lib/workflow-context";
 import type { FigureItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,25 @@ export function FiguresVariablesStep() {
   } = useWorkflow();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [manualLabel, setManualLabel] = useState("");
+
+  // Manual fallback for when the AI scan is unavailable (server/model down)
+  // or simply missed a figure — without this, a failed "figures" call left
+  // `figures` empty with no way to ever get a `selectedFigure`, and every
+  // later step (Digitize included) silently depends on that id to persist
+  // anything. Typing a label and adding it here guarantees the same id shape
+  // (`fig-N`) the AI path produces, so nothing downstream needs to know the
+  // figure was added by hand instead of scanned.
+  function addManualFigure() {
+    const label = manualLabel.trim();
+    if (!label) return;
+    const id = `fig-manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const item: FigureItem = { id, label };
+    const next = [...figures, item];
+    setFigures(next);
+    setSelectedFigure(item);
+    setManualLabel("");
+  }
 
   async function run() {
     if (!paper) return;
@@ -93,6 +113,35 @@ export function FiguresVariablesStep() {
           {error}
         </p>
       )}
+
+      <div className="mb-5 flex items-center gap-2 rounded-lg border border-dashed border-border p-3">
+        <Input
+          value={manualLabel}
+          onChange={(e) => setManualLabel(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addManualFigure();
+            }
+          }}
+          placeholder="Thêm figure thủ công, vd. Figure 3b"
+          aria-label="Tên figure thêm thủ công"
+          className="max-w-xs"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={addManualFigure}
+          disabled={!manualLabel.trim()}
+        >
+          <Plus className="size-4" />
+          Thêm
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          Dùng khi AI lỗi/không quét được, hoặc bỏ sót figure
+        </span>
+      </div>
 
       {figures.length > 0 ? (
         <div className="grid gap-3 md:grid-cols-2">

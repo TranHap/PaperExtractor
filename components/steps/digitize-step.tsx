@@ -145,6 +145,41 @@ export function DigitizeStep() {
 
   const canProceed = !!digitization;
 
+  // Every point digitized here is only kept if it's saved into
+  // `digitizationByFigure`, keyed by `selectedFigure.id` — and that only
+  // happens once a figure has actually been picked (normally in "Figures &
+  // Variables"). The Stepper nav lets you jump straight to this step with no
+  // figure selected at all (e.g. after an AI scan failure there), and
+  // without this guard the digitizer below still "works" — calibrate axes,
+  // click points, see them on screen — while silently never persisting any
+  // of it, so it only surfaces later as an empty, unexportable Dataset step.
+  if (!selectedFigure) {
+    return (
+      <StepShell
+        stepId="digitize"
+        title="Digitize"
+        description="Hiệu chỉnh trục X/Y và số hóa dữ liệu từ figure này."
+        onBack={goBack}
+        onNext={goNext}
+        nextDisabled
+      >
+        <div className="flex min-h-[240px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border p-6 text-center">
+          <p className="text-sm text-muted-foreground">
+            Chưa có figure nào được chọn — số hóa ở đây sẽ không được lưu.
+          </p>
+          <p className="max-w-md text-xs text-muted-foreground">
+            Quay lại bước "Figures & Variables" để chọn hoặc thêm figure
+            (kể cả khi AI lỗi, bạn vẫn có thể thêm figure thủ công ở đó)
+            trước khi số hóa.
+          </p>
+          <Button variant="outline" size="sm" onClick={goBack}>
+            Quay lại Figures & Variables
+          </Button>
+        </div>
+      </StepShell>
+    );
+  }
+
   return (
     <StepShell
       stepId="digitize"
