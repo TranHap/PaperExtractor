@@ -603,6 +603,7 @@ export async function POST(req: Request) {
         xField,
         yField,
         seriesField,
+        figureImage,
       } = body as {
         figure: {
           xAxis?: string;
@@ -632,10 +633,21 @@ export async function POST(req: Request) {
         xField?: string;
         yField?: string;
         seriesField?: string;
+        // The PDF page image the user digitized this figure from (data URL,
+        // e.g. "data:image/jpeg;base64,..."), if any. Extracted `paperText`
+        // (lib/pdf.ts) is plain-text-layer-only — it has no idea a table's
+        // columns got scrambled, can't read anything that's only an image
+        // (SI characterization tables rendered as figures, XRD plots,
+        // chemical structures), and can't see the actual figure/legend at
+        // all. Passing the page image alongside the text lets the model
+        // read those directly instead of only trusting the (sometimes
+        // mangled) text extraction.
+        figureImage?: string;
       };
       console.log("figure_extract for:", figure);
       console.log("fields to extract:", fields);
       console.log("paperContext provided:", !!paperContext);
+      console.log("figureImage provided:", !!figureImage);
 
       // changingVariable/curveLabels are now set directly by the user when
       // adding the figure in Digitize (an optional "biến thay đổi khác"
@@ -652,30 +664,27 @@ export async function POST(req: Request) {
       const knownCurveLabels = figure?.curveLabels ?? [];
 
       try {
-        const { object } = await retryStreamObject({
-          model: MODEL,
-          output: Output.object({
-            schema: z.object({
-              values: z.array(fieldValueSchema),
-              changingFieldNames: z
-                .array(z.string())
-                .describe(
-                  "Exact 'name' values (must match a name in 'Fields' exactly) that you classified per rule 1-2 as matching this figure's changingVariable or a digitization column, and therefore left empty in 'values'.",
-                ),
-              notes: z
-                .string()
-                .describe(
-                  "Short rationale explaining how the fixed-variable values were determined for this figure, or empty string",
-                ),
-            }),
-          }),
-          prompt: [
+      // IANA media type embedded in the data URL itself (the AI SDK also
+      // parses this out of the "data:" prefix, but FilePart.mediaType is
+      // typed as required, so this covers both a page image — always JPEG,
+      // see lib/pdf.ts's toDataURL("image/jpeg", ...) — and a custom image
+      // the user uploaded via "Tải ảnh khác" in Digitize, which keeps
+      // whatever type the original file was.
+      const figureImageMediaType =
+        figureImage?.match(/^data:([^;]+);base64,/)?.[1] ?? "image/jpeg";
+
+      const figureExtractPromptText = [
             "You are extracting values for the FIXED VARIABLES of ONE SPECIFIC figure in a scientific paper.",
             "",
             "CONTEXT:",
             "- 'Figure' below is metadata about this exact figure/panel, optionally including a 'changingVariable' list — quantities the USER has told you vary between curves in this figure, OTHER than whatever is already mapped to the Series column (see 'Digitization columns' below, which is the primary and most reliable off-limits signal). 'changingVariable' is very often EMPTY — that's the normal case, not a sign that nothing else varies; rely on rule 8's cross-figure-contamination caution to stay safe when it's empty.",
             "- 'Fields' is the full list of fields you must produce an answer for (a value, or an intentional empty string).",
             "- 'Digitization columns' below identify which schema fields correspond to the digitized x, y, and series output columns. These are structural output columns from digitization, not values extracted from paper text — treat them as OFF-LIMITS exactly like changingVariable.",
+            ...(figureImage
+              ? [
+                  "- An IMAGE of the PDF page this figure was digitized from is attached. 'Paper text' below is plain-text-layer extraction only — it has no idea when a table's columns got scrambled, can't read anything that only exists as an image (SI characterization tables rendered as images, XRD plots, chemical structures, axis tick labels with no text layer), and can't see the actual figure/legend at all. Use the image as the PRIMARY source for anything on that page — actual figure content, tables, axis labels, legends — and prefer it over 'Paper text' whenever they conflict, since the image is what's actually printed and the text is a lossy extraction of it. The image is only this ONE page though, so still use 'Paper text' for anything located elsewhere in the paper (methods section, other pages of SI, etc.).",
+                ]
+              : []),
             "",
             "RULES:",
             "1. FIRST, for every field in 'Fields', decide whether it semantically matches one of the Figure's 'changingVariable' entries (when given) — match by meaning, not exact string (e.g. field 'pH' matches a changingVariable entry 'Initial pH'). Every field name you classify this way MUST be added to 'changingFieldNames', using the exact 'name' string as given in 'Fields'. The ONLY evidence allowed for this classification is the literal 'changingVariable' array given below for THIS figure — do NOT classify a field as changing just because that same quantity happens to be swept across OTHER figures/experiments elsewhere in the paper, or because it seems like the kind of thing that COULD vary in general. A field absent from THIS figure's 'changingVariable' is a fixed variable for THIS figure, full stop, even if some other figure in the paper varies it — UNLESS rule 8 applies.",
@@ -729,7 +738,49 @@ export async function POST(req: Request) {
             paperContext
               ? JSON.stringify(paperContext, null, 2)
               : "(none provided)",
-          ].join("\n\n"),
+          ].join("\n\n");
+
+        const { object } = await retryStreamObject({
+          model: MODEL,
+          output: Output.object({
+            schema: z.object({
+              values: z.array(fieldValueSchema),
+              changingFieldNames: z
+                .array(z.string())
+                .describe(
+                  "Exact 'name' values (must match a name in 'Fields' exactly) that you classified per rule 1-2 as matching this figure's changingVariable or a digitization column, and therefore left empty in 'values'.",
+                ),
+              notes: z
+                .string()
+                .describe(
+                  "Short rationale explaining how the fixed-variable values were determined for this figure, or empty string",
+                ),
+            }),
+          }),
+          // The image (when provided) is appended as a SEPARATE content part
+          // after the full text prompt, rather than interleaved into it — it
+          // varies per call just like 'Figure'/'Paper context' already do,
+          // so it can't sit before them without breaking the cacheable
+          // prefix (see the prompt-caching comment above). When there's no
+          // image, this is exactly the plain string prompt the API used
+          // before — same request shape, same caching behavior.
+          ...(figureImage
+            ? {
+                messages: [
+                  {
+                    role: "user" as const,
+                    content: [
+                      { type: "text" as const, text: figureExtractPromptText },
+                      {
+                        type: "file" as const,
+                        data: figureImage,
+                        mediaType: figureImageMediaType,
+                      },
+                    ],
+                  },
+                ],
+              }
+            : { prompt: figureExtractPromptText }),
         });
 
         // Debug: confirm whether key characterization terms actually made it

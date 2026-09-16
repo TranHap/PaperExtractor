@@ -22,6 +22,7 @@ export function FillValuesStep() {
     setFigureContext,
     figureContextByFigure,
     setFigureContextByFigure,
+    digitizationByFigure,
     xField,
     yField,
     seriesField,
@@ -125,6 +126,16 @@ export function FillValuesStep() {
           seriesField: seriesField || undefined,
           paperText: paper.text,
           paperContext: paperCharacteristics,
+          // The page image this figure was digitized from, if any — lets
+          // the model actually read the figure/table/axis labels instead of
+          // relying only on pdfjs's plain-text extraction (lib/pdf.ts),
+          // which can't see anything that only exists as an image (SI
+          // tables rendered as images, XRD plots, chemical structures) and
+          // has no idea when a table's columns got scrambled during
+          // extraction. Omitted entirely when this figure hasn't been
+          // digitized yet — the server falls back to text-only exactly like
+          // before.
+          figureImage: digitizationByFigure[currentFigureId ?? ""]?.imageUrl || undefined,
         }),
       });
       const contentType = res.headers.get("content-type");
@@ -180,6 +191,9 @@ export function FillValuesStep() {
             </p>
             <p className="text-xs text-muted-foreground">
               Điền giá trị cho các field còn thiếu của figure
+              {digitizationByFigure[currentFigureId ?? ""]?.imageUrl
+                ? " · kèm ảnh trang PDF để model đọc trực tiếp"
+                : " · chưa có ảnh (số hóa figure này trước để model đọc được cả hình/bảng)"}
             </p>
           </div>
           <Button
