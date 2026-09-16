@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
   Loader2,
   ScanSearch,
@@ -17,21 +17,7 @@ import type {
   FieldValue,
   PaperCharacteristicEntity,
   PaperCharacteristicMaterial,
-  PaperCharacteristicsResult,
 } from "@/lib/types";
-import {
-  chunkText,
-  clip,
-  mapWithConcurrency,
-  mergeEntityLists,
-  mergeFieldValueArrays,
-  PAPER_CONTEXT_CHUNK_OVERLAP,
-  PAPER_CONTEXT_CHUNK_SIZE,
-  PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS,
-  PAPER_CONTEXT_MAX_TOTAL_CHARS,
-  type EntityNames,
-  type PaperContextChunkResult,
-} from "@/lib/paper-context";
 
 function download(name: string, content: string, type: string) {
   const blob = new Blob([content], { type });
@@ -175,163 +161,22 @@ export function PaperCharacteristicsStep() {
     goNext,
     paperCharacteristics,
     setPaperCharacteristics,
+    paperCharacteristicsStatus,
+    paperCharacteristicsProgress: progress,
+    paperCharacteristicsError: error,
+    paperCharacteristicsWarning: warning,
+    runPaperCharacteristicsScan,
   } = useWorkflow();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const loading = paperCharacteristicsStatus === "running";
 
-  // Posts one task to /api/extract and throws the same friendly error the
-  // old single-request flow used to, so a single chunk timing out reads the
-  // same way it always has — just scoped to one chunk instead of the whole
-  // scan (see run() below for why this is now split per-chunk).
-  async function postExtract(body: Record<string, unknown>): Promise<any> {
-    const res = await fetch("/api/extract", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const contentType = res.headers.get("content-type");
-    if (!contentType || !contentType.includes("application/json")) {
-      throw new Error(
-        `Server returned non-JSON response (status ${res.status}). This usually means the request timed out on the server. Please try again with a shorter paper, or contact support if the problem persists.`,
-      );
-    }
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Trích xuất thất bại");
-    return data;
-  }
-
-  // Drives the paper_context scan chunk-by-chunk from the BROWSER instead of
-  // asking the server to scan the whole paper in one request. Netlify's
-  // Next.js Server Handler enforces a hard ~30s timeout on this route no
-  // matter what runtime/maxDuration it declares, so a single request that
-  // waited on every chunk server-side routinely got killed mid-response
-  // (browser saw a raw non-JSON 502). Each small per-chunk request below
-  // finishes in a few seconds — comfortably under any platform timeout —
-  // and the results are merged here using the same logic that used to run
-  // on the server (see lib/paper-context.ts).
-  async function run() {
+  // The actual scan (chunking, per-chunk requests, merging) now lives in
+  // WorkflowProvider (lib/workflow-context.tsx) — not here — specifically so
+  // it keeps running in the background if you navigate to another step
+  // (Figures & Variables, Digitize...) while it's still going, instead of
+  // being silently abandoned or double-triggered when you come back.
+  function run() {
     if (!paper) return;
-    setLoading(true);
-    setError(null);
-    setWarning(null);
-    setProgress(null);
-    try {
-      const clippedText = clip(paper.text, PAPER_CONTEXT_MAX_TOTAL_CHARS);
-      // Only look for the columns the user's own schema actually needs —
-      // replaces the old hardcoded materials-science property list (SBET,
-      // pHpzc, LogKow, Abraham descriptors, etc.), which asked for far more
-      // than most schemas need and slowed every chunk call down.
-      const fields = (schema?.fields ?? []).map((f) => ({
-        name: f.name,
-        description: f.description,
-        unit: f.unit,
-      }));
-
-      let knownEntities: EntityNames = {
-        materials: [],
-        oxidants: [],
-        micropollutants: [],
-      };
-      try {
-        knownEntities = await postExtract({
-          task: "paper_context_names",
-          paperText: clippedText,
-        });
-      } catch (e) {
-        // Best-effort consistency aid, not a hard requirement — if it fails,
-        // chunks below still work, just with a slightly higher chance of
-        // naming the same entity differently in two chunks.
-        console.error("paper_context_names failed (continuing without it):", e);
-      }
-
-      const chunks = chunkText(
-        clippedText,
-        PAPER_CONTEXT_CHUNK_SIZE,
-        PAPER_CONTEXT_CHUNK_OVERLAP,
-      );
-      let done = 0;
-      let chunkFailures = 0;
-      setProgress({ done: 0, total: chunks.length });
-
-      const chunkResults = await mapWithConcurrency(
-        chunks,
-        PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS,
-        async (chunkOfText, index): Promise<PaperContextChunkResult> => {
-          try {
-            const data = await postExtract({
-              task: "paper_context_chunk",
-              chunkText: chunkOfText,
-              chunkIndex: index,
-              totalChunks: chunks.length,
-              knownEntities,
-              fields,
-            });
-            return {
-              materials: data.materials ?? [],
-              oxidants: data.oxidants ?? [],
-              micropollutants: data.micropollutants ?? [],
-              generalConditions: data.generalConditions ?? [],
-              notes: data.notes ?? "",
-            };
-          } catch (e) {
-            // One slow/failed chunk shouldn't sink the whole scan — skip it
-            // and let the rest of the paper's context still come back.
-            chunkFailures++;
-            console.error(`paper_context_chunk ${index} failed:`, e);
-            return {
-              materials: [],
-              oxidants: [],
-              micropollutants: [],
-              generalConditions: [],
-              notes: "",
-            };
-          } finally {
-            done++;
-            setProgress({ done, total: chunks.length });
-          }
-        },
-      );
-
-      const materials = mergeEntityLists(
-        chunkResults.flatMap((r) => r.materials ?? []),
-      );
-      const oxidants = mergeEntityLists(
-        chunkResults.flatMap((r) => r.oxidants ?? []),
-      );
-      const micropollutants = mergeEntityLists(
-        chunkResults.flatMap((r) => r.micropollutants ?? []),
-      );
-      const generalConditions = chunkResults.reduce(
-        (acc, r) => mergeFieldValueArrays(acc, r.generalConditions ?? []),
-        [] as FieldValue[],
-      );
-      const notes = chunkResults
-        .map((r) => r.notes?.trim())
-        .filter((n): n is string => Boolean(n))
-        .join(" ");
-
-      const result: PaperCharacteristicsResult = {
-        materials,
-        oxidants,
-        micropollutants,
-        generalConditions,
-        notes,
-      };
-      setPaperCharacteristics(result);
-
-      if (chunkFailures > 0) {
-        setWarning(
-          `${chunkFailures}/${chunks.length} đoạn của paper quét chưa xong (mạng/model chậm) — dữ liệu có thể thiếu một phần. Bấm "Quét lại" để thử lại phần còn thiếu.`,
-        );
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Có lỗi xảy ra");
-    } finally {
-      setLoading(false);
-      setProgress(null);
-    }
+    runPaperCharacteristicsScan(paper, schema);
   }
 
   function exportJson() {

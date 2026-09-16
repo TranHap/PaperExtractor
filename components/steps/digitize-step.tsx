@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ImageUp } from "lucide-react";
+import { Check, ImageUp, Plus } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { FigureDigitizer } from "@/components/figure-digitizer";
 import { useWorkflow } from "@/lib/workflow-context";
+import type { FigureItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // Digitizing pixel points is its own step, separate from Fill Values — the
@@ -15,11 +17,23 @@ import { cn } from "@/lib/utils";
 // screen). Splitting them back out gives each the full page width; they
 // remain independent tasks that don't block each other, so doing them on
 // separate steps costs nothing besides one extra "Tiếp tục" click.
+//
+// Figure selection now also lives here instead of a separate "Figures &
+// Variables" AI-scan step: scanning the whole paper up front to list every
+// figure was wasted work when you already know which 2-3 figures you care
+// about, and the "which field varies between curves" classification that
+// step used to compute for Fill Values is already covered more reliably by
+// the Series-column mapping below (deterministic, set by you) — see
+// app/api/extract/route.ts's figure_extract prompt for how xField/yField/
+// seriesField get treated as off-limits regardless of anything else.
 export function DigitizeStep() {
   const {
     paper,
     schema,
+    figures,
+    setFigures,
     selectedFigure,
+    setSelectedFigure,
     digitization,
     setDigitization,
     digitizationByFigure,
@@ -35,9 +49,35 @@ export function DigitizeStep() {
   } = useWorkflow();
   const uploadRef = useRef<HTMLInputElement>(null);
   const previousFigureId = useRef<string | null>(null);
+  const [manualLabel, setManualLabel] = useState("");
+  const [manualChangingVariable, setManualChangingVariable] = useState("");
 
   const currentFigureId = selectedFigure?.id ?? null;
   const allFields = schema?.fields ?? [];
+
+  // Manual figure entry — the label is all that's required; "biến thay đổi
+  // khác" is only for the rare case where something OTHER than the
+  // Series-column field also varies between curves in this figure (the
+  // series column itself is already handled deterministically, see the
+  // comment above). Leave it blank in the normal case.
+  function addManualFigure() {
+    const label = manualLabel.trim();
+    if (!label) return;
+    const id = `fig-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const changingVariable = manualChangingVariable
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const item: FigureItem = {
+      id,
+      label,
+      ...(changingVariable.length ? { changingVariable } : {}),
+    };
+    setFigures([...figures, item]);
+    setSelectedFigure(item);
+    setManualLabel("");
+    setManualChangingVariable("");
+  }
 
   // --- Digitization: restore per-figure cache when switching figures ---
   useEffect(() => {
@@ -143,53 +183,95 @@ export function DigitizeStep() {
     }
   }
 
-  const canProceed = !!digitization;
-
-  // Every point digitized here is only kept if it's saved into
-  // `digitizationByFigure`, keyed by `selectedFigure.id` — and that only
-  // happens once a figure has actually been picked (normally in "Figures &
-  // Variables"). The Stepper nav lets you jump straight to this step with no
-  // figure selected at all (e.g. after an AI scan failure there), and
-  // without this guard the digitizer below still "works" — calibrate axes,
-  // click points, see them on screen — while silently never persisting any
-  // of it, so it only surfaces later as an empty, unexportable Dataset step.
-  if (!selectedFigure) {
-    return (
-      <StepShell
-        stepId="digitize"
-        title="Digitize"
-        description="Hiệu chỉnh trục X/Y và số hóa dữ liệu từ figure này."
-        onBack={goBack}
-        onNext={goNext}
-        nextDisabled
-      >
-        <div className="flex min-h-[240px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border p-6 text-center">
-          <p className="text-sm text-muted-foreground">
-            Chưa có figure nào được chọn — số hóa ở đây sẽ không được lưu.
-          </p>
-          <p className="max-w-md text-xs text-muted-foreground">
-            Quay lại bước "Figures & Variables" để chọn hoặc thêm figure
-            (kể cả khi AI lỗi, bạn vẫn có thể thêm figure thủ công ở đó)
-            trước khi số hóa.
-          </p>
-          <Button variant="outline" size="sm" onClick={goBack}>
-            Quay lại Figures & Variables
-          </Button>
-        </div>
-      </StepShell>
-    );
-  }
+  const canProceed = !!selectedFigure && !!digitization;
 
   return (
     <StepShell
       stepId="digitize"
       title="Digitize"
-      description="Hiệu chỉnh trục X/Y và số hóa dữ liệu từ figure này."
+      description="Thêm figure, hiệu chỉnh trục X/Y và số hóa dữ liệu."
       onBack={goBack}
       onNext={goNext}
       nextDisabled={!canProceed}
     >
       <div className="min-w-0">
+        <div className="mb-5 rounded-lg border border-border bg-card p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Input
+              value={manualLabel}
+              onChange={(e) => setManualLabel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addManualFigure();
+                }
+              }}
+              placeholder="Tên figure, vd. Figure 2a"
+              aria-label="Tên figure"
+              className="max-w-[200px]"
+            />
+            <Input
+              value={manualChangingVariable}
+              onChange={(e) => setManualChangingVariable(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addManualFigure();
+                }
+              }}
+              placeholder="Biến thay đổi khác (nếu có, ngoài cột Series) — cách nhau bởi dấu phẩy"
+              aria-label="Biến thay đổi khác"
+              className="max-w-xs flex-1"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={addManualFigure}
+              disabled={!manualLabel.trim()}
+            >
+              <Plus className="size-4" />
+              Thêm figure
+            </Button>
+          </div>
+
+          {figures.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 border-t border-border pt-2.5">
+              {figures.map((f) => {
+                const digitized =
+                  (digitizationByFigure[f.id]?.points.length ?? 0) > 0;
+                const active = selectedFigure?.id === f.id;
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setSelectedFigure(f)}
+                    className={cn(
+                      "flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                      active
+                        ? "border-primary bg-primary/10 text-primary"
+                        : digitized
+                          ? "border-chart-2/50 text-chart-2 hover:border-chart-2"
+                          : "border-border text-muted-foreground hover:border-primary/40",
+                    )}
+                  >
+                    {digitized && <Check className="size-3" />}
+                    {f.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {!selectedFigure ? (
+          <div className="flex min-h-[240px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border text-center">
+            <p className="text-sm text-muted-foreground">
+              Thêm figure ở trên để bắt đầu số hóa.
+            </p>
+          </div>
+        ) : (
+        <>
         <div className="mb-4 flex items-center justify-between gap-3">
           <p className="text-sm font-medium text-foreground">
             {selectedFigure?.label}
@@ -313,6 +395,8 @@ export function DigitizeStep() {
               Chọn một trang PDF hoặc tải ảnh figure để bắt đầu số hóa.
             </p>
           </div>
+        )}
+        </>
         )}
       </div>
     </StepShell>

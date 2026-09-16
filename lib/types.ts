@@ -125,7 +125,6 @@ export type StepId =
   | "parse"
   | "schema"
   | "paper-characteristics"
-  | "figures-variables"
   | "digitize"
   | "fill-values"
   | "merge"
@@ -193,36 +192,29 @@ export const STEPS: StepMeta[] = [
     phase: "setup",
   },
   {
-    id: "figures-variables",
-    index: 4,
-    title: "Figures & Variables",
-    subtitle: "Quét figure và xác định biến thay đổi",
-    phase: "figure",
-  },
-  {
     id: "digitize",
-    index: 5,
+    index: 4,
     title: "Digitize",
-    subtitle: "Hiệu chỉnh trục và số hóa điểm dữ liệu cho figure này",
+    subtitle: "Thêm figure, hiệu chỉnh trục và số hóa điểm dữ liệu",
     phase: "figure",
   },
   {
     id: "fill-values",
-    index: 6,
+    index: 5,
     title: "Fill Values",
     subtitle: "Điền giá trị các field còn thiếu cho figure này",
     phase: "figure",
   },
   {
     id: "merge",
-    index: 7,
+    index: 6,
     title: "Review",
     subtitle: "Hợp nhất ngữ cảnh của figure này trước khi gộp vào dataset",
     phase: "figure",
   },
   {
     id: "dataset",
-    index: 8,
+    index: 7,
     title: "Dataset",
     subtitle: "Toàn bộ figure đã số hóa của paper — xuất 1 file tổng",
     phase: "export",

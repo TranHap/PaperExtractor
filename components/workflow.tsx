@@ -7,7 +7,6 @@ import { AppHeader } from "@/components/app-header";
 import { SchemaStep } from "@/components/steps/schema-step";
 import { ParseStep } from "@/components/steps/parse-step";
 import { PaperCharacteristicsStep } from "@/components/steps/paper-characteristics-step";
-import { FiguresVariablesStep } from "@/components/steps/figures-variables-step";
 import { DigitizeStep } from "@/components/steps/digitize-step";
 import { FillValuesStep } from "@/components/steps/fill-values-step";
 import { MergeStep } from "@/components/steps/merge-step";
@@ -29,7 +28,6 @@ export function Workflow() {
           {currentStep === "paper-characteristics" && (
             <PaperCharacteristicsStep />
           )}
-          {currentStep === "figures-variables" && <FiguresVariablesStep />}
           {currentStep === "digitize" && <DigitizeStep />}
           {currentStep === "fill-values" && <FillValuesStep />}
           {currentStep === "merge" && <MergeStep />}

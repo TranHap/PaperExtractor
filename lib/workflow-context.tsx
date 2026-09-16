@@ -12,6 +12,20 @@ import {
   STEPS,
   type StepId,
 } from "@/lib/types";
+import {
+  chunkText,
+  clip,
+  mapWithConcurrency,
+  mergeEntityLists,
+  mergeFieldValueArrays,
+  PAPER_CONTEXT_CHUNK_OVERLAP,
+  PAPER_CONTEXT_CHUNK_SIZE,
+  PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS,
+  PAPER_CONTEXT_MAX_TOTAL_CHARS,
+  type EntityNames,
+  type PaperContextChunkResult,
+} from "@/lib/paper-context";
+import type { FieldValue } from "@/lib/types";
 
 export interface ParsedPaper {
   fileName: string;
@@ -78,6 +92,25 @@ interface WorkflowState {
 
   paperCharacteristics: PaperCharacteristicsResult | null;
   setPaperCharacteristics: (v: PaperCharacteristicsResult | null) => void;
+
+  /**
+   * The "Materials" scan (paper_context_names + paper_context_chunk calls)
+   * used to live entirely inside PaperCharacteristicsStep's own useState —
+   * which meant navigating to another step (nothing stops that; the Stepper
+   * has no gating) unmounted the component, and a second visit to Materials
+   * re-triggered a full second scan on top of whatever was still in flight,
+   * silently racing two sets of network calls against the same
+   * setPaperCharacteristics. Owning the scan here instead — a single
+   * instance shared through context regardless of which step is mounted —
+   * lets the user leave for Figures/Digitize while it keeps running, see its
+   * progress from anywhere, and come back to a finished (or still-running)
+   * result instead of a duplicate scan.
+   */
+  paperCharacteristicsStatus: "idle" | "running" | "done" | "error";
+  paperCharacteristicsProgress: { done: number; total: number } | null;
+  paperCharacteristicsError: string | null;
+  paperCharacteristicsWarning: string | null;
+  runPaperCharacteristicsScan: (paper: ParsedPaper, schema: Schema | null) => void;
 }
 
 const Ctx = createContext<WorkflowState | null>(null);
@@ -176,6 +209,159 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const [figureContextByFigure, setFigureContextByFigure] = useState<Record<string, FigureContext>>({});
   const [paperCharacteristics, setPaperCharacteristics] = useState<PaperCharacteristicsResult | null>(null);
 
+  const [paperCharacteristicsStatus, setPaperCharacteristicsStatus] = useState<
+    "idle" | "running" | "done" | "error"
+  >("idle");
+  const [paperCharacteristicsProgress, setPaperCharacteristicsProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+  const [paperCharacteristicsError, setPaperCharacteristicsError] = useState<string | null>(null);
+  const [paperCharacteristicsWarning, setPaperCharacteristicsWarning] = useState<string | null>(null);
+  // Guards against firing a second scan while one is already in flight — a
+  // ref (not state) because it has to be read synchronously at call time,
+  // before any re-render, to actually block a rapid double-click/re-mount.
+  const paperCharacteristicsRunning = useRef(false);
+  // Bumped whenever the paper changes (see the hydration effect below) so a
+  // scan started for a PREVIOUS paper that's still finishing in the
+  // background (fetches aren't cancelled — nothing here aborts them) can
+  // detect it's stale and drop its results instead of overwriting the new
+  // paper's (empty) paperCharacteristics with the old paper's data.
+  const paperCharacteristicsGeneration = useRef(0);
+
+  async function postExtractForScan(body: Record<string, unknown>): Promise<any> {
+    const res = await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const contentType = res.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      throw new Error(
+        `Server returned non-JSON response (status ${res.status}). This usually means the request timed out on the server. Please try again with a shorter paper, or contact support if the problem persists.`,
+      );
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Trích xuất thất bại");
+    return data;
+  }
+
+  // Drives the paper_context scan chunk-by-chunk from the BROWSER (see
+  // lib/paper-context.ts for why: Netlify's ~30s server-side timeout).
+  // Lives on the provider — not inside PaperCharacteristicsStep — precisely
+  // so it keeps running (and keeps updating shared `paperCharacteristics`
+  // state) no matter which step the user navigates to while it's in flight.
+  function runPaperCharacteristicsScan(paperArg: ParsedPaper, schemaArg: Schema | null) {
+    if (paperCharacteristicsRunning.current) return; // already running — don't double-fire
+    paperCharacteristicsRunning.current = true;
+    const myGeneration = paperCharacteristicsGeneration.current;
+    setPaperCharacteristicsStatus("running");
+    setPaperCharacteristicsError(null);
+    setPaperCharacteristicsWarning(null);
+    setPaperCharacteristicsProgress(null);
+
+    (async () => {
+      try {
+        const clippedText = clip(paperArg.text, PAPER_CONTEXT_MAX_TOTAL_CHARS);
+        const fields = (schemaArg?.fields ?? []).map((f) => ({
+          name: f.name,
+          description: f.description,
+          unit: f.unit,
+        }));
+
+        let knownEntities: EntityNames = {
+          materials: [],
+          oxidants: [],
+          micropollutants: [],
+        };
+        try {
+          knownEntities = await postExtractForScan({
+            task: "paper_context_names",
+            paperText: clippedText,
+          });
+        } catch (e) {
+          // Best-effort consistency aid, not a hard requirement — if it
+          // fails, chunks below still work, just with a slightly higher
+          // chance of naming the same entity differently in two chunks.
+          console.error("paper_context_names failed (continuing without it):", e);
+        }
+
+        const chunks = chunkText(clippedText, PAPER_CONTEXT_CHUNK_SIZE, PAPER_CONTEXT_CHUNK_OVERLAP);
+        let done = 0;
+        let chunkFailures = 0;
+        setPaperCharacteristicsProgress({ done: 0, total: chunks.length });
+
+        const chunkResults = await mapWithConcurrency(
+          chunks,
+          PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS,
+          async (chunkOfText, index): Promise<PaperContextChunkResult> => {
+            try {
+              const data = await postExtractForScan({
+                task: "paper_context_chunk",
+                chunkText: chunkOfText,
+                chunkIndex: index,
+                totalChunks: chunks.length,
+                knownEntities,
+                fields,
+              });
+              return {
+                materials: data.materials ?? [],
+                oxidants: data.oxidants ?? [],
+                micropollutants: data.micropollutants ?? [],
+                generalConditions: data.generalConditions ?? [],
+                notes: data.notes ?? "",
+              };
+            } catch (e) {
+              chunkFailures++;
+              console.error(`paper_context_chunk ${index} failed:`, e);
+              return {
+                materials: [],
+                oxidants: [],
+                micropollutants: [],
+                generalConditions: [],
+                notes: "",
+              };
+            } finally {
+              done++;
+              setPaperCharacteristicsProgress({ done, total: chunks.length });
+            }
+          },
+        );
+
+        const materials = mergeEntityLists(chunkResults.flatMap((r) => r.materials ?? []));
+        const oxidants = mergeEntityLists(chunkResults.flatMap((r) => r.oxidants ?? []));
+        const micropollutants = mergeEntityLists(chunkResults.flatMap((r) => r.micropollutants ?? []));
+        const generalConditions = chunkResults.reduce(
+          (acc, r) => mergeFieldValueArrays(acc, r.generalConditions ?? []),
+          [] as FieldValue[],
+        );
+        const notes = chunkResults
+          .map((r) => r.notes?.trim())
+          .filter((n): n is string => Boolean(n))
+          .join(" ");
+
+        if (myGeneration !== paperCharacteristicsGeneration.current) return; // stale — paper changed mid-scan
+        setPaperCharacteristics({ materials, oxidants, micropollutants, generalConditions, notes });
+        setPaperCharacteristicsStatus("done");
+        if (chunkFailures > 0) {
+          setPaperCharacteristicsWarning(
+            `${chunkFailures}/${chunks.length} đoạn của paper quét chưa xong (mạng/model chậm) — dữ liệu có thể thiếu một phần. Bấm "Quét lại" để thử lại phần còn thiếu.`,
+          );
+        }
+      } catch (e) {
+        if (myGeneration === paperCharacteristicsGeneration.current) {
+          setPaperCharacteristicsStatus("error");
+          setPaperCharacteristicsError(e instanceof Error ? e.message : "Có lỗi xảy ra");
+        }
+      } finally {
+        if (myGeneration === paperCharacteristicsGeneration.current) {
+          setPaperCharacteristicsProgress(null);
+          paperCharacteristicsRunning.current = false;
+        }
+      }
+    })();
+  }
+
   useEffect(() => {
     if (!loaded && initial) {
       setCurrentStep(initial.currentStep ?? "parse");
@@ -215,6 +401,12 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setFigureContext(null);
       setFigureContextByFigure({});
       setPaperCharacteristics(null);
+      paperCharacteristicsGeneration.current++;
+      paperCharacteristicsRunning.current = false;
+      setPaperCharacteristicsStatus("idle");
+      setPaperCharacteristicsProgress(null);
+      setPaperCharacteristicsError(null);
+      setPaperCharacteristicsWarning(null);
     }
     persist({
       currentStep,
@@ -273,6 +465,12 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setFigureContext(null);
       setFigureContextByFigure({});
       setPaperCharacteristics(null);
+      paperCharacteristicsGeneration.current++;
+      paperCharacteristicsRunning.current = false;
+      setPaperCharacteristicsStatus("idle");
+      setPaperCharacteristicsProgress(null);
+      setPaperCharacteristicsError(null);
+      setPaperCharacteristicsWarning(null);
       setCurrentStep("parse");
       try { localStorage.removeItem(STORAGE_KEY); } catch {}
     };
@@ -308,6 +506,11 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setFigureContextByFigure,
       paperCharacteristics,
       setPaperCharacteristics,
+      paperCharacteristicsStatus,
+      paperCharacteristicsProgress,
+      paperCharacteristicsError,
+      paperCharacteristicsWarning,
+      runPaperCharacteristicsScan,
     };
   }, [
     loaded,
@@ -325,6 +528,10 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     figureContext,
     figureContextByFigure,
     paperCharacteristics,
+    paperCharacteristicsStatus,
+    paperCharacteristicsProgress,
+    paperCharacteristicsError,
+    paperCharacteristicsWarning,
   ]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
