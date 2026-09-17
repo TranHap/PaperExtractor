@@ -17,11 +17,18 @@ export const maxDuration = 60;
 const openaiProvider = createOpenAI();
 const MODEL = openaiProvider.chat("gpt-4.1-mini");
 
-// Self-imposed abort budget for a single request. Kept a few seconds under
-// Netlify's real ~40s Edge Function cutoff (see comment above) so we can
-// still return a clean JSON error instead of letting the platform kill the
-// function mid-response and hand the browser a raw timeout page.
-const EDGE_BUDGET_MS = 34_000;
+// Self-imposed abort budget for a single request. The comment further down
+// (search "hard ~30s") documents that Netlify's Next.js Server Handler kills
+// this whole route at ~30s REGARDLESS of the edge runtime/maxDuration above
+// — that's a lower, harder ceiling than the ~40s Edge Function cutoff this
+// budget used to be tuned against. A budget of 34s is HIGHER than that ~30s
+// ceiling, so the platform kills the function before our own deadline logic
+// ever gets a chance to fire and return a clean JSON error — the browser
+// gets a raw non-JSON 502 instead (this is what tasks like figure_extract,
+// which aren't split into small per-chunk calls like paper_context, were
+// hitting). Keep this a few seconds UNDER 30s so there's always time left to
+// build and send the JSON error response before the platform's hard kill.
+const EDGE_BUDGET_MS = 24_000;
 
 class DeadlineExceededError extends Error {
   constructor(
