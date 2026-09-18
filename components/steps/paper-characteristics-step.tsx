@@ -1,12 +1,13 @@
 "use client";
 
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import {
   Loader2,
   ScanSearch,
   AlertCircle,
   FlaskConical,
   BookOpen,
+  Search,
 } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,127 @@ import type {
   PaperCharacteristicEntity,
   PaperCharacteristicMaterial,
 } from "@/lib/types";
+import type { LserdRow } from "@/app/api/lserd/route";
+
+// Abraham solvation parameters (E, S, A, B, V) for a micropollutant are
+// almost never stated in the paper itself — they come from an external
+// reference database (UFZ LSERD, see app/api/lserd/route.ts). Several
+// literature sources usually exist for the same compound with slightly
+// different regressed values, so this is a manual pick from search results
+// rather than an auto-fill: the user searches by compound name and chooses
+// which row's E/S/A/B/V to keep.
+const LSERD_FIELD_NAMES = ["E", "S", "A", "B", "V"] as const;
+
+function upsertLserdRow(values: FieldValue[], row: LserdRow): FieldValue[] {
+  const source = `LSERD${row.shortCite ? `: ${row.shortCite}` : ""}`;
+  const next = [...values];
+  for (const name of LSERD_FIELD_NAMES) {
+    const value = row[name];
+    if (!value || value === "-") continue;
+    const idx = next.findIndex((v) => v.name === name);
+    const updated: FieldValue = {
+      name,
+      value,
+      confidence: 1,
+      source,
+      provenance: "looked_up",
+      originalValue: undefined,
+      conversionNote: row.citation || undefined,
+    };
+    if (idx >= 0) next[idx] = updated;
+    else next.push(updated);
+  }
+  return next;
+}
+
+function LserdLookup({ entityName, onApply }: { entityName: string; onApply: (row: LserdRow) => void }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState<LserdRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function search() {
+    setOpen(true);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/lserd", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: entityName }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Tra cứu thất bại");
+      setRows(data.rows as LserdRow[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Tra cứu thất bại");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={search} disabled={loading}>
+        {loading ? <Loader2 className="size-3 animate-spin" /> : <Search className="size-3" />}
+        Tra LSERD (E/S/A/B/V)
+      </Button>
+      {open && (
+        <div className="mt-2 rounded-md border border-border bg-muted/30 p-2">
+          {loading && <p className="text-[11px] text-muted-foreground">Đang tra cứu...</p>}
+          {error && <p className="text-[11px] text-destructive">{error}</p>}
+          {!loading && !error && rows && rows.length === 0 && (
+            <p className="text-[11px] text-muted-foreground">Không tìm thấy "{entityName}" trong LSERD.</p>
+          )}
+          {!loading && rows && rows.length > 0 && (
+            <div className="max-h-56 overflow-y-auto">
+              <table className="w-full text-[11px]">
+                <thead className="text-left text-muted-foreground">
+                  <tr>
+                    <th className="px-1.5 py-1 font-medium">Name</th>
+                    <th className="px-1.5 py-1 font-medium">E</th>
+                    <th className="px-1.5 py-1 font-medium">S</th>
+                    <th className="px-1.5 py-1 font-medium">A</th>
+                    <th className="px-1.5 py-1 font-medium">B</th>
+                    <th className="px-1.5 py-1 font-medium">V</th>
+                    <th className="px-1.5 py-1 font-medium">Nguồn</th>
+                    <th className="px-1.5 py-1" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={i} className="border-t border-border/60">
+                      <td className="px-1.5 py-1 font-mono">{r.name}</td>
+                      <td className="px-1.5 py-1">{r.E || "—"}</td>
+                      <td className="px-1.5 py-1">{r.S || "—"}</td>
+                      <td className="px-1.5 py-1">{r.A || "—"}</td>
+                      <td className="px-1.5 py-1">{r.B || "—"}</td>
+                      <td className="px-1.5 py-1">{r.V || "—"}</td>
+                      <td className="px-1.5 py-1 text-muted-foreground">{r.shortCite}</td>
+                      <td className="px-1.5 py-1">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => {
+                            onApply(r);
+                            setOpen(false);
+                          }}
+                        >
+                          Dùng
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function download(name: string, content: string, type: string) {
   const blob = new Blob([content], { type });
@@ -75,11 +197,14 @@ function EntitySection({
   icon,
   entities,
   onValueChange,
+  onLserdApply,
 }: {
   title: string;
   icon: ReactNode;
   entities: (PaperCharacteristicMaterial | PaperCharacteristicEntity)[];
   onValueChange: (entityIndex: number, valueIndex: number, newValue: string) => void;
+  /** Only passed for the micropollutants section — enables the LSERD lookup button per entity. */
+  onLserdApply?: (entityIndex: number, row: LserdRow) => void;
 }) {
   if (entities.length === 0) return null;
   return (
@@ -146,6 +271,12 @@ function EntitySection({
                 No characteristics extracted
               </p>
             )}
+            {onLserdApply && (
+              <LserdLookup
+                entityName={entity.name}
+                onApply={(row) => onLserdApply(i, row)}
+              />
+            )}
           </div>
         ))}
       </div>
@@ -201,6 +332,14 @@ export function PaperCharacteristicsStep() {
         : entity,
     );
     setPaperCharacteristics({ ...paperCharacteristics, [category]: list });
+  }
+
+  function applyLserdRow(entityIndex: number, row: LserdRow) {
+    if (!paperCharacteristics) return;
+    const list = paperCharacteristics.micropollutants.map((entity, i) =>
+      i === entityIndex ? { ...entity, values: upsertLserdRow(entity.values, row) } : entity,
+    );
+    setPaperCharacteristics({ ...paperCharacteristics, micropollutants: list });
   }
 
   function updateGeneralCondition(valueIndex: number, newValue: string) {
@@ -298,6 +437,7 @@ export function PaperCharacteristicsStep() {
             icon={<FlaskConical className="size-4 text-primary" />}
             entities={paperCharacteristics.micropollutants}
             onValueChange={(ei, vi, nv) => updateEntityValue("micropollutants", ei, vi, nv)}
+            onLserdApply={applyLserdRow}
           />
 
           {paperCharacteristics.generalConditions.length > 0 && (
