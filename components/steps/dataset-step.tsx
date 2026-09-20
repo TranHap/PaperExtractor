@@ -13,6 +13,8 @@ import {
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ScatterPreview } from "@/components/scatter-preview";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged, toCsv } from "@/lib/merge";
@@ -46,6 +48,8 @@ export function DatasetStep() {
   const {
     schema,
     paper,
+    citationLabel,
+    setCitationLabel,
     figures,
     selectedFigure,
     digitizationByFigure,
@@ -144,7 +148,9 @@ export function DatasetStep() {
 
     const headers = ["Source", ...columns];
     const metaByName = new Map(rawMerged.map((m) => [m.name, m]));
-    const source = `${paperLabel} (${figure.label})`;
+    const source = citationLabel.trim()
+      ? `[${citationLabel.trim()}] ${figure.label}`
+      : `${paperLabel} (${figure.label})`;
 
     const rows: (string | number)[][] = points.map((p) => {
       const row = columns.map((name) => {
@@ -226,6 +232,30 @@ export function DatasetStep() {
             <Download className="size-4" />
           </Button>
         </div>
+      </div>
+
+      <div className="mb-6 rounded-lg border border-border bg-card p-5">
+        <Label htmlFor="citation-label" className="text-sm font-medium">
+          Tên trích dẫn ngắn (cột "Source" trong CSV)
+        </Label>
+        <p className="mb-2 mt-0.5 text-xs text-muted-foreground">
+          Tùy chọn — vd: "YongFengEST 2016". Bỏ trống thì dùng tên/tiêu đề file paper thay thế.
+        </p>
+        <Input
+          id="citation-label"
+          value={citationLabel}
+          onChange={(e) => setCitationLabel(e.target.value)}
+          placeholder="YongFengEST 2016"
+          className="max-w-xs"
+        />
+        {figure && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Source sẽ ghi:{" "}
+            <span className="font-mono text-foreground">
+              {citationLabel.trim() ? `[${citationLabel.trim()}] ${figure.label}` : `${paperLabel} (${figure.label})`}
+            </span>
+          </p>
+        )}
       </div>
 
       {completedFigures.length > 1 && (

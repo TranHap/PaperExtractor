@@ -61,6 +61,18 @@ interface WorkflowState {
   paper: ParsedPaper | null;
   setPaper: (p: ParsedPaper | null) => void;
 
+  /**
+   * Short citation-style label for this paper (e.g. "YongFengEST 2016"),
+   * used as the CSV "Source" column instead of the full paper title —
+   * something like `paper.title` is too long/inconsistent for that (varies
+   * with how the publisher's PDF metadata happens to be set) and there's no
+   * reliable way to auto-derive an author+year citekey from PDF text, so
+   * this is entered by hand once per paper. Empty means "not set yet";
+   * DatasetStep falls back to the paper title/filename in that case.
+   */
+  citationLabel: string;
+  setCitationLabel: (label: string) => void;
+
   figures: FigureItem[];
   setFigures: (f: FigureItem[]) => void;
 
@@ -127,6 +139,7 @@ type PersistedState = {
   yField: string;
   seriesField: string;
   paper: ParsedPaper | null;
+  citationLabel: string;
   figures: FigureItem[];
   selectedFigure: FigureItem | null;
   digitization: Digitization | null;
@@ -201,6 +214,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
   const [yField, setYField] = useState("");
   const [seriesField, setSeriesField] = useState("");
   const [paper, setPaper] = useState<ParsedPaper | null>(null);
+  const [citationLabel, setCitationLabel] = useState("");
   const [figures, setFigures] = useState<FigureItem[]>([]);
   const [selectedFigure, setSelectedFigure] = useState<FigureItem | null>(null);
   const [digitization, setDigitization] = useState<Digitization | null>(null);
@@ -371,6 +385,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setYField(initial.yField ?? "");
       setSeriesField(initial.seriesField ?? "");
       setPaper(initial.paper ?? null);
+      setCitationLabel(initial.citationLabel ?? "");
       setFigures(initial.figures ?? []);
       setSelectedFigure(initial.selectedFigure ?? null);
       setDigitization(initial.digitization ?? null);
@@ -393,6 +408,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     }
     if (paper?.fileName && paper.fileName !== previousPaperFile.current) {
       previousPaperFile.current = paper.fileName;
+      setCitationLabel("");
       setFigures([]);
       setSelectedFigure(null);
       setVariableFields([]);
@@ -416,6 +432,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       yField,
       seriesField,
       paper,
+      citationLabel,
       figures,
       selectedFigure,
       digitization,
@@ -433,6 +450,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     yField,
     seriesField,
     paper,
+    citationLabel,
     figures,
     selectedFigure,
     digitization,
@@ -458,6 +476,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setYField("");
       setSeriesField("");
       setPaper(null);
+      setCitationLabel("");
       setFigures([]);
       setSelectedFigure(null);
       setDigitization(null);
@@ -492,6 +511,8 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
       setSeriesField,
       paper,
       setPaper,
+      citationLabel,
+      setCitationLabel,
       figures,
       setFigures,
       selectedFigure,
@@ -521,6 +542,7 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
     yField,
     seriesField,
     paper,
+    citationLabel,
     figures,
     selectedFigure,
     digitization,
