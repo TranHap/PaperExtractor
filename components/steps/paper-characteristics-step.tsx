@@ -20,6 +20,29 @@ import type {
   PaperCharacteristicMaterial,
 } from "@/lib/types";
 import type { LserdRow } from "@/app/api/lserd/route";
+import { searchPubchem, type PubchemBasic, type PubchemPkaCandidate } from "@/lib/pubchem";
+
+// Shared by every external-lookup "apply" handler below (LSERD, PubChem):
+// replaces the field by name if it already exists, otherwise appends it —
+// same convention regardless of which external source supplied the value.
+function upsertField(
+  values: FieldValue[],
+  update: { name: string; value: string; source: string; conversionNote?: string },
+): FieldValue[] {
+  const next: FieldValue = {
+    confidence: 1,
+    provenance: "looked_up",
+    originalValue: undefined,
+    ...update,
+  };
+  const idx = values.findIndex((v) => v.name === update.name);
+  if (idx >= 0) {
+    const copy = [...values];
+    copy[idx] = next;
+    return copy;
+  }
+  return [...values, next];
+}
 
 // Abraham solvation parameters (E, S, A, B, V) for a micropollutant are
 // almost never stated in the paper itself — they come from an external
@@ -32,24 +55,41 @@ const LSERD_FIELD_NAMES = ["E", "S", "A", "B", "V"] as const;
 
 function upsertLserdRow(values: FieldValue[], row: LserdRow): FieldValue[] {
   const source = `LSERD${row.shortCite ? `: ${row.shortCite}` : ""}`;
-  const next = [...values];
+  let next = values;
   for (const name of LSERD_FIELD_NAMES) {
     const value = row[name];
     if (!value || value === "-") continue;
-    const idx = next.findIndex((v) => v.name === name);
-    const updated: FieldValue = {
-      name,
-      value,
-      confidence: 1,
-      source,
-      provenance: "looked_up",
-      originalValue: undefined,
-      conversionNote: row.citation || undefined,
-    };
-    if (idx >= 0) next[idx] = updated;
-    else next.push(updated);
+    next = upsertField(next, { name, value, source, conversionNote: row.citation || undefined });
   }
   return next;
+}
+
+// MW/LogKow(XLogP)/TPSA come back from PubChem as clean single values, so
+// they're applied together in one shot. pKa has no structured field in
+// PubChem — only free-text experimental annotations, often several per
+// compound from different sources — so it's applied separately, one
+// candidate at a time, after the user reads and picks one (see
+// lib/pubchem.ts for why).
+function upsertPubchemBasic(values: FieldValue[], basic: PubchemBasic): FieldValue[] {
+  const source = `PubChem CID ${basic.cid}${basic.name ? ` (${basic.name})` : ""}`;
+  let next = values;
+  for (const [name, value] of [
+    ["MW", basic.MW],
+    ["LogKow", basic.LogKow],
+    ["TPSA", basic.TPSA],
+  ] as const) {
+    if (!value) continue;
+    next = upsertField(next, { name, value, source });
+  }
+  return next;
+}
+
+function upsertPubchemPka(values: FieldValue[], candidate: PubchemPkaCandidate): FieldValue[] {
+  return upsertField(values, {
+    name: "pKa",
+    value: candidate.value,
+    source: `PubChem: ${candidate.source}`,
+  });
 }
 
 function LserdLookup({ entityName, onApply }: { entityName: string; onApply: (row: LserdRow) => void }) {
@@ -141,6 +181,97 @@ function LserdLookup({ entityName, onApply }: { entityName: string; onApply: (ro
   );
 }
 
+function PubchemLookup({
+  entityName,
+  onApplyBasic,
+  onApplyPka,
+}: {
+  entityName: string;
+  onApplyBasic: (basic: PubchemBasic) => void;
+  onApplyPka: (candidate: PubchemPkaCandidate) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ basic: PubchemBasic | null; pkaCandidates: PubchemPkaCandidate[] } | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  async function search() {
+    setOpen(true);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await searchPubchem(entityName);
+      setResult(res);
+      if (!res.basic) setError(`Không tìm thấy "${entityName}" trên PubChem.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Tra cứu thất bại");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={search} disabled={loading}>
+        {loading ? <Loader2 className="size-3 animate-spin" /> : <Search className="size-3" />}
+        Tra PubChem (MW/LogKow/TPSA/pKa)
+      </Button>
+      {open && (
+        <div className="mt-2 rounded-md border border-border bg-muted/30 p-2 text-[11px]">
+          {loading && <p className="text-muted-foreground">Đang tra cứu...</p>}
+          {error && <p className="text-destructive">{error}</p>}
+          {!loading && result?.basic && (
+            <div className="flex flex-wrap items-center gap-3">
+              <span>
+                <span className="text-muted-foreground">PubChem: </span>
+                <span className="font-mono">{result.basic.name}</span>
+              </span>
+              <span>MW={result.basic.MW || "—"}</span>
+              <span>LogKow={result.basic.LogKow || "—"}</span>
+              <span>TPSA={result.basic.TPSA || "—"}</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-6 px-2 text-[10px]"
+                onClick={() => onApplyBasic(result.basic!)}
+              >
+                Dùng MW/LogKow/TPSA
+              </Button>
+            </div>
+          )}
+          {!loading && result && result.pkaCandidates.length > 0 && (
+            <div className="mt-2">
+              <p className="mb-1 text-muted-foreground">
+                pKa (dữ liệu thô từ PubChem, có thể nhiều nguồn khác nhau — kiểm tra lại trước khi dùng):
+              </p>
+              <ul className="flex flex-col gap-1">
+                {result.pkaCandidates.map((c, i) => (
+                  <li key={i} className="flex items-center justify-between gap-2">
+                    <span>
+                      <span className="font-mono">{c.value}</span>{" "}
+                      <span className="text-muted-foreground">({c.source})</span>
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-6 px-2 text-[10px]"
+                      onClick={() => onApplyPka(c)}
+                    >
+                      Dùng
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function download(name: string, content: string, type: string) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -198,6 +329,7 @@ function EntitySection({
   entities,
   onValueChange,
   onLserdApply,
+  onPubchemApply,
 }: {
   title: string;
   icon: ReactNode;
@@ -205,6 +337,11 @@ function EntitySection({
   onValueChange: (entityIndex: number, valueIndex: number, newValue: string) => void;
   /** Only passed for the micropollutants section — enables the LSERD lookup button per entity. */
   onLserdApply?: (entityIndex: number, row: LserdRow) => void;
+  /** Passed for oxidants and micropollutants — enables the PubChem lookup button per entity. */
+  onPubchemApply?: {
+    basic: (entityIndex: number, basic: PubchemBasic) => void;
+    pka: (entityIndex: number, candidate: PubchemPkaCandidate) => void;
+  };
 }) {
   if (entities.length === 0) return null;
   return (
@@ -277,6 +414,13 @@ function EntitySection({
                 onApply={(row) => onLserdApply(i, row)}
               />
             )}
+            {onPubchemApply && (
+              <PubchemLookup
+                entityName={entity.name}
+                onApplyBasic={(basic) => onPubchemApply.basic(i, basic)}
+                onApplyPka={(candidate) => onPubchemApply.pka(i, candidate)}
+              />
+            )}
           </div>
         ))}
       </div>
@@ -334,12 +478,19 @@ export function PaperCharacteristicsStep() {
     setPaperCharacteristics({ ...paperCharacteristics, [category]: list });
   }
 
-  function applyLserdRow(entityIndex: number, row: LserdRow) {
+  // Shared by every external-lookup "apply" handler: swaps in a new
+  // `values` array for one entity of one category, via the given pure
+  // updater (upsertLserdRow / upsertPubchemBasic / upsertPubchemPka).
+  function applyEntityValues(
+    category: "oxidants" | "micropollutants",
+    entityIndex: number,
+    updateValues: (values: FieldValue[]) => FieldValue[],
+  ) {
     if (!paperCharacteristics) return;
-    const list = paperCharacteristics.micropollutants.map((entity, i) =>
-      i === entityIndex ? { ...entity, values: upsertLserdRow(entity.values, row) } : entity,
+    const list = paperCharacteristics[category].map((entity, i) =>
+      i === entityIndex ? { ...entity, values: updateValues(entity.values) } : entity,
     );
-    setPaperCharacteristics({ ...paperCharacteristics, micropollutants: list });
+    setPaperCharacteristics({ ...paperCharacteristics, [category]: list });
   }
 
   function updateGeneralCondition(valueIndex: number, newValue: string) {
@@ -430,6 +581,10 @@ export function PaperCharacteristicsStep() {
             icon={<FlaskConical className="size-4 text-primary" />}
             entities={paperCharacteristics.oxidants}
             onValueChange={(ei, vi, nv) => updateEntityValue("oxidants", ei, vi, nv)}
+            onPubchemApply={{
+              basic: (ei, basic) => applyEntityValues("oxidants", ei, (values) => upsertPubchemBasic(values, basic)),
+              pka: (ei, c) => applyEntityValues("oxidants", ei, (values) => upsertPubchemPka(values, c)),
+            }}
           />
 
           <EntitySection
@@ -437,7 +592,14 @@ export function PaperCharacteristicsStep() {
             icon={<FlaskConical className="size-4 text-primary" />}
             entities={paperCharacteristics.micropollutants}
             onValueChange={(ei, vi, nv) => updateEntityValue("micropollutants", ei, vi, nv)}
-            onLserdApply={applyLserdRow}
+            onLserdApply={(ei, row) =>
+              applyEntityValues("micropollutants", ei, (values) => upsertLserdRow(values, row))
+            }
+            onPubchemApply={{
+              basic: (ei, basic) =>
+                applyEntityValues("micropollutants", ei, (values) => upsertPubchemBasic(values, basic)),
+              pka: (ei, c) => applyEntityValues("micropollutants", ei, (values) => upsertPubchemPka(values, c)),
+            }}
           />
 
           {paperCharacteristics.generalConditions.length > 0 && (
