@@ -119,13 +119,13 @@ function LserdLookup({ entityName, onApply }: { entityName: string; onApply: (ro
   }
 
   return (
-    <div className="mt-2">
-      <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={search} disabled={loading}>
+    <div>
+      <Button variant="outline" size="sm" className="h-7 rounded-full text-[11px]" onClick={search} disabled={loading}>
         {loading ? <Loader2 className="size-3 animate-spin" /> : <Search className="size-3" />}
         Tra LSERD (E/S/A/B/V)
       </Button>
       {open && (
-        <div className="mt-2 rounded-md border border-border bg-muted/30 p-2">
+        <div className="mt-2 rounded-lg border border-border bg-muted/30 p-2">
           {loading && <p className="text-[11px] text-muted-foreground">Đang tra cứu...</p>}
           {error && <p className="text-[11px] text-destructive">{error}</p>}
           {!loading && !error && rows && rows.length === 0 && (
@@ -213,13 +213,13 @@ function PubchemLookup({
   }
 
   return (
-    <div className="mt-2">
-      <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={search} disabled={loading}>
+    <div>
+      <Button variant="outline" size="sm" className="h-7 rounded-full text-[11px]" onClick={search} disabled={loading}>
         {loading ? <Loader2 className="size-3 animate-spin" /> : <Search className="size-3" />}
         Tra PubChem (MW/LogKow/TPSA/pKa)
       </Button>
       {open && (
-        <div className="mt-2 rounded-md border border-border bg-muted/30 p-2 text-[11px]">
+        <div className="mt-2 rounded-lg border border-border bg-muted/30 p-2 text-[11px]">
           {loading && <p className="text-muted-foreground">Đang tra cứu...</p>}
           {error && <p className="text-destructive">{error}</p>}
           {!loading && result?.basic && (
@@ -346,80 +346,84 @@ function EntitySection({
   if (entities.length === 0) return null;
   return (
     <div>
-      <h2 className="mb-3 text-sm font-medium flex items-center gap-2">
+      <p className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         {icon}
-        {title} ({entities.length})
-      </h2>
-      <div className="grid gap-3 md:grid-cols-2">
+        {title}
+        <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10.5px] normal-case tracking-normal text-foreground">
+          {entities.length}
+        </span>
+      </p>
+      <div className="grid gap-4 md:grid-cols-2">
         {entities.map((entity, i) => (
-          <div key={i} className="rounded-lg border border-border bg-card p-4">
-            <div className="mb-2 flex items-baseline gap-2">
-              <span className="text-sm font-semibold">{entity.name}</span>
+          <div key={i} className="flex flex-col gap-3.5 rounded-xl border border-border p-5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[15px] font-semibold">{entity.name}</span>
               {"role" in entity && entity.role && (
-                <Badge variant="secondary" className="text-[10px]">
+                <Badge variant="secondary" className="rounded-full text-[10px] font-normal text-muted-foreground">
                   {entity.role}
                 </Badge>
               )}
             </div>
             {entity.values.length > 0 ? (
-              <div className="overflow-hidden rounded-md border border-border">
-                <table className="w-full text-xs">
-                  <thead className="bg-muted/60 text-left">
-                    <tr>
-                      <th className="px-3 py-1.5 font-medium">Property</th>
-                      <th className="px-3 py-1.5 font-medium">Value</th>
-                      <th className="px-3 py-1.5 font-medium">Status</th>
-                      <th className="px-3 py-1.5 font-medium">Source</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {entity.values.map((v, j) => (
-                      <tr key={j} className="border-t border-border">
-                        <td className="px-3 py-1 font-mono">{v.name}</td>
-                        <td className="px-3 py-1">
-                          <EditableValueCell
-                            value={v}
-                            onChange={(newValue) => onValueChange(i, j, newValue)}
-                          />
-                          {v.originalValue && (
-                            <span className="ml-1 font-normal text-muted-foreground">
-                              (gốc: {v.originalValue})
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-1">
+              <table className="w-full text-[13px]">
+                <thead>
+                  <tr className="text-left">
+                    <th className="pb-1.5 pr-2 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Property</th>
+                    <th className="pb-1.5 pr-2 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Value</th>
+                    <th className="pb-1.5 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entity.values.map((v, j) => (
+                    <tr key={j} className="border-t border-border">
+                      <td className="py-2 pr-2 font-mono text-muted-foreground">{v.name}</td>
+                      <td className="py-2 pr-2">
+                        <EditableValueCell
+                          value={v}
+                          onChange={(newValue) => onValueChange(i, j, newValue)}
+                        />
+                        {v.originalValue && (
+                          <span className="ml-1 font-normal text-muted-foreground">
+                            (gốc: {v.originalValue})
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 text-muted-foreground">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <ProvenanceBadge provenance={v.provenance} />
-                        </td>
-                        <td className="px-3 py-1 text-muted-foreground">
-                          {v.source || ""}
-                          {v.conversionNote && (
-                            <span className="block text-[10px] text-muted-foreground/80">
-                              {v.conversionNote}
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                          {v.source && <span className="text-[11.5px]">{v.source}</span>}
+                        </div>
+                        {v.conversionNote && (
+                          <span className="mt-0.5 block text-[10.5px] text-muted-foreground/80">
+                            {v.conversionNote}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             ) : (
               <p className="text-xs text-muted-foreground">
                 No characteristics extracted
               </p>
             )}
-            {onLserdApply && (
-              <LserdLookup
-                entityName={entity.name}
-                onApply={(row) => onLserdApply(i, row)}
-              />
-            )}
-            {onPubchemApply && (
-              <PubchemLookup
-                entityName={entity.name}
-                onApplyBasic={(basic) => onPubchemApply.basic(i, basic)}
-                onApplyPka={(candidate) => onPubchemApply.pka(i, candidate)}
-              />
+            {(onLserdApply || onPubchemApply) && (
+              <div className="flex flex-col gap-2 border-t border-dashed border-border pt-3">
+                {onLserdApply && (
+                  <LserdLookup
+                    entityName={entity.name}
+                    onApply={(row) => onLserdApply(i, row)}
+                  />
+                )}
+                {onPubchemApply && (
+                  <PubchemLookup
+                    entityName={entity.name}
+                    onApplyBasic={(basic) => onPubchemApply.basic(i, basic)}
+                    onApplyPka={(candidate) => onPubchemApply.pka(i, candidate)}
+                  />
+                )}
+              </div>
             )}
           </div>
         ))}
@@ -515,12 +519,24 @@ export function PaperCharacteristicsStep() {
       nextDisabled={!paperCharacteristics}
       nextLabel="Xác nhận & tiếp tục"
     >
-      <div className="mb-5 flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">
-          {paperCharacteristics
-            ? `Đã trích xuất ${paperCharacteristics.materials.length} vật liệu`
-            : "Chưa trích xuất"}
-        </p>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        {paperCharacteristics ? (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              { label: "Vật liệu", value: paperCharacteristics.materials.length },
+              { label: "Chất oxy hóa", value: paperCharacteristics.oxidants.length },
+              { label: "Chất ô nhiễm", value: paperCharacteristics.micropollutants.length },
+              { label: "Điều kiện chung", value: paperCharacteristics.generalConditions.length },
+            ].map((s) => (
+              <div key={s.label} className="rounded-xl border border-border px-4 py-3">
+                <p className="font-mono text-2xl font-semibold tabular-nums leading-none">{s.value}</p>
+                <p className="mt-1.5 text-[11.5px] text-muted-foreground">{s.label}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Chưa trích xuất</p>
+        )}
         <div className="flex gap-2">
           {paperCharacteristics && (
             <Button variant="outline" size="sm" onClick={exportJson}>
@@ -564,7 +580,7 @@ export function PaperCharacteristicsStep() {
       )}
 
       {paperCharacteristics && (
-        <div className="space-y-6">
+        <div className="space-y-8">
           <p className="text-xs text-muted-foreground">
             Bấm vào một giá trị để chỉnh sửa trực tiếp nếu model trích sai.
           </p>
@@ -604,34 +620,36 @@ export function PaperCharacteristicsStep() {
 
           {paperCharacteristics.generalConditions.length > 0 && (
             <div>
-              <h2 className="mb-3 text-sm font-medium">
-                Điều kiện chung (General Conditions)
-              </h2>
-              <div className="overflow-hidden rounded-lg border border-border">
-                <table className="w-full text-xs">
-                  <thead className="bg-muted/60 text-left">
-                    <tr>
-                      <th className="px-3 py-1.5 font-medium">Property</th>
-                      <th className="px-3 py-1.5 font-medium">Value</th>
-                      <th className="px-3 py-1.5 font-medium">Status</th>
-                      <th className="px-3 py-1.5 font-medium">Source</th>
+              <p className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Điều kiện chung
+                <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10.5px] normal-case tracking-normal text-foreground">
+                  {paperCharacteristics.generalConditions.length}
+                </span>
+              </p>
+              <div className="rounded-xl border border-border p-5">
+                <table className="w-full text-[13px]">
+                  <thead>
+                    <tr className="text-left">
+                      <th className="pb-1.5 pr-2 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Property</th>
+                      <th className="pb-1.5 pr-2 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Value</th>
+                      <th className="pb-1.5 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Source</th>
                     </tr>
                   </thead>
                   <tbody>
                     {paperCharacteristics.generalConditions.map((v, i) => (
                       <tr key={i} className="border-t border-border">
-                        <td className="px-3 py-1 font-mono">{v.name}</td>
-                        <td className="px-3 py-1">
+                        <td className="py-2 pr-2 font-mono text-muted-foreground">{v.name}</td>
+                        <td className="py-2 pr-2">
                           <EditableValueCell
                             value={v}
                             onChange={(newValue) => updateGeneralCondition(i, newValue)}
                           />
                         </td>
-                        <td className="px-3 py-1">
-                          <ProvenanceBadge provenance={v.provenance} />
-                        </td>
-                        <td className="px-3 py-1 text-muted-foreground">
-                          {v.source || ""}
+                        <td className="py-2 text-muted-foreground">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <ProvenanceBadge provenance={v.provenance} />
+                            {v.source && <span className="text-[11.5px]">{v.source}</span>}
+                          </div>
                         </td>
                       </tr>
                     ))}

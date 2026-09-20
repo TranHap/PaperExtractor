@@ -15,31 +15,38 @@ interface ValuesEditorProps {
 
 const PROVENANCE_META: Record<
   NonNullable<FieldValue["provenance"]>,
-  { label: string; className: string }
+  { label: string; className: string; dotClassName: string }
 > = {
   reported: {
-    label: "REPORTED",
-    className:
-      "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    label: "reported",
+    className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    dotClassName: "bg-emerald-500",
   },
   looked_up: {
-    label: "LOOKED-UP",
-    className: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    label: "looked-up",
+    className: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    dotClassName: "bg-amber-500",
   },
   derived: {
-    label: "DERIVED",
-    className: "bg-sky-500/10 text-sky-600 dark:text-sky-400",
+    label: "derived",
+    className: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
+    dotClassName: "bg-violet-500",
   },
   not_applicable: {
-    label: "N/A",
+    label: "n/a",
     className: "bg-muted text-muted-foreground",
+    dotClassName: "bg-muted-foreground/50",
   },
   not_reported: {
-    label: "NR",
+    label: "not reported",
     className: "bg-destructive/10 text-destructive",
+    dotClassName: "bg-destructive",
   },
 }
 
+// Dot + pill, same three colors everywhere a value's provenance shows up
+// (here, the Materials entity tables, Dataset preview) — a small, consistent
+// "how much do I trust this" signal instead of a loud full-color badge.
 export function ProvenanceBadge({ provenance }: { provenance?: FieldValue["provenance"] }) {
   if (!provenance) return null
   const meta = PROVENANCE_META[provenance]
@@ -47,10 +54,11 @@ export function ProvenanceBadge({ provenance }: { provenance?: FieldValue["prove
   return (
     <span
       className={cn(
-        "rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10.5px] font-medium",
         meta.className,
       )}
     >
+      <span className={cn("size-1.5 shrink-0 rounded-full", meta.dotClassName)} />
       {meta.label}
     </span>
   )
