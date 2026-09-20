@@ -16,6 +16,10 @@ import { Progress } from "@/components/ui/progress";
 import { useWorkflow } from "@/lib/workflow-context";
 import type { ParsedPaper } from "@/lib/workflow-context";
 import { parsePdf, mergeParsedPapers, type ParseProgress } from "@/lib/pdf";
+import { parseDocx, isDocxFile } from "@/lib/docx";
+
+const SI_ACCEPT =
+  "application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx";
 
 export function ParseStep() {
   const { paper, setPaper, goNext } = useWorkflow();
@@ -83,18 +87,18 @@ export function ParseStep() {
     try {
       const parsed: ParsedPaper[] = [];
       for (const file of files) {
-        parsed.push(await parsePdf(file));
+        parsed.push(isDocxFile(file) ? await parseDocx(file) : await parsePdf(file));
       }
       const next = [...supplements, ...parsed];
       setSupplements(next);
       setPaper(mergeParsedPapers(base, next));
     } catch (e) {
       console.log(
-        "[v0] supplementary pdf parse error:",
+        "[v0] supplementary file parse error:",
         e instanceof Error ? e.message : String(e),
       );
       setError(
-        "Không đọc được một trong các file bổ sung. Hãy thử file khác hoặc kiểm tra file có bị mã hóa không.",
+        "Không đọc được một trong các file bổ sung. Hãy thử file khác hoặc kiểm tra file có bị mã hóa/hỏng không.",
       );
     } finally {
       setSupLoading(false);
@@ -194,9 +198,9 @@ export function ParseStep() {
                   Tài liệu bổ sung (Supplementary Information)
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  Tùy chọn — nhiều đặc tính (SBET, pHpzc, MW oxidant,
-                  LogKow...) thường chỉ nằm trong SI, không nằm trong bài
-                  chính.
+                  Tùy chọn — nhận cả PDF và Word (.docx). Nhiều đặc tính
+                  (SBET, pHpzc, MW oxidant, LogKow...) thường chỉ nằm trong
+                  SI, không nằm trong bài chính.
                 </p>
               </div>
               <Button
@@ -215,7 +219,7 @@ export function ParseStep() {
               <input
                 ref={supInputRef}
                 type="file"
-                accept="application/pdf,.pdf"
+                accept={SI_ACCEPT}
                 multiple
                 className="sr-only"
                 onChange={(e) => {
