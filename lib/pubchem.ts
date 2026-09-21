@@ -32,7 +32,35 @@ export type PubchemSearchResult = {
   pkaCandidates: PubchemPkaCandidate[];
 };
 
-export async function searchPubchem(query: string): Promise<PubchemSearchResult> {
+// PubChem's name endpoint requires an EXACT registered name/synonym match —
+// no fuzzy matching. Entity names coming out of Materials extraction are
+// whatever string the paper's own prose used, which very often is the
+// "Full name (ABBR)" convention papers use on first mention (e.g. "Triclosan
+// (TCS)", "Atrazine (ATZ)") — PubChem 404s on that combined string even
+// though the plain name alone resolves fine, which reads to a user as "this
+// well-known compound isn't in PubChem" when it's really just a string-match
+// artifact. Strips zero-width/invisible characters (another realistic
+// PDF-text-extraction artifact that silently breaks an otherwise-correct
+// name) and, on a 404, retries with the parenthetical stripped and then with
+// just its contents (the abbreviation alone), stopping at the first hit.
+function normalizeQuery(name: string): string {
+  return name.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+}
+
+function candidateQueries(query: string): string[] {
+  const normalized = normalizeQuery(query);
+  const candidates = [normalized];
+  const parenMatch = normalized.match(/^(.*?)\s*\(([^)]+)\)\s*(.*)$/);
+  if (parenMatch) {
+    const outside = `${parenMatch[1]} ${parenMatch[3]}`.trim();
+    if (outside && !candidates.includes(outside)) candidates.push(outside);
+    const inside = parenMatch[2].trim();
+    if (inside && !candidates.includes(inside)) candidates.push(inside);
+  }
+  return candidates;
+}
+
+async function fetchPubchemOnce(query: string): Promise<PubchemSearchResult> {
   const propRes = await fetch(PROPERTY_URL(query));
   if (propRes.status === 404) return { basic: null, pkaCandidates: [] };
   if (!propRes.ok) throw new Error(`PubChem trả về lỗi (status ${propRes.status})`);
@@ -58,6 +86,15 @@ export async function searchPubchem(query: string): Promise<PubchemSearchResult>
   }
 
   return { basic, pkaCandidates };
+}
+
+export async function searchPubchem(query: string): Promise<PubchemSearchResult> {
+  let last: PubchemSearchResult = { basic: null, pkaCandidates: [] };
+  for (const candidate of candidateQueries(query)) {
+    last = await fetchPubchemOnce(candidate);
+    if (last.basic) return last;
+  }
+  return last;
 }
 
 function extractPkaCandidates(view: unknown): PubchemPkaCandidate[] {
