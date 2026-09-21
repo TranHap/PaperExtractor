@@ -29,7 +29,6 @@ export type PaperContextChunkResult = {
   materials: PaperCharacteristicMaterial[];
   oxidants: PaperCharacteristicEntity[];
   micropollutants: PaperCharacteristicEntity[];
-  generalConditions: FieldValue[];
   notes?: string;
 };
 
@@ -120,12 +119,26 @@ function tokenize(s: string): Set<string> {
 // even though every meaningful word of the short form is present in the
 // long form. Matches when every token of the shorter name appears somewhere
 // in the longer name's token set.
+//
+// Deliberately does NOT fall back to keysLikelyMatch's raw substring check
+// (unlike the property-name matching in lib/entity-values.ts, where that's
+// fine) — a bare chemical formula is too easily a false-positive substring
+// of a DIFFERENT, related compound's combined name after normKey strips
+// punctuation: "CuFe2O4" (a plain ferrite) is literally contained inside
+// "Cu/CuFe2O4 composite" (metallic Cu blended WITH CuFe2O4 — a genuinely
+// DIFFERENT catalyst the paper compares against it, not the same one
+// spelled differently). That real bug merged two distinct catalysts from a
+// real paper into one, silently discarding one's whole characterization
+// row. Requiring the shorter name to carry at least 2 tokens of real signal
+// before trusting a subset match avoids it while still catching the
+// abbreviation case above (both sides have 2+ tokens there).
 export function namesLikelyMatch(a: string, b: string): boolean {
-  if (keysLikelyMatch(a, b)) return true;
+  if (normKey(a) === normKey(b)) return true;
   const ta = tokenize(a);
   const tb = tokenize(b);
   if (ta.size === 0 || tb.size === 0) return false;
   const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  if (small.size < 2) return false;
   for (const t of small) {
     if (!big.has(t)) return false;
   }

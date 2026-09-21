@@ -1,6 +1,7 @@
 ﻿import { streamText, Output } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { z } from "zod";
+import { keysLikelyMatch } from "@/lib/entity-values";
 
 // This app is deployed on Netlify. Netlify's regular (Node.js) Functions
 // have a short execution ceiling (~10-26s depending on plan) — nowhere near
@@ -142,7 +143,7 @@ function clip(text: string, max = 90000) {
 // --- Deterministic fallback fill for "figure_extract" ---
 //
 // The figure-level LLM call already has a "look up in paper_context" rule
-// baked into its prompt (rule 10), but that's a soft instruction — the model
+// baked into its prompt (rule 11), but that's a soft instruction — the model
 // can still leave a field empty even when paper_context clearly has a
 // matching value, e.g. by failing to recognize the field name refers to a
 // property it already extracted. This is a small, deterministic safety net
@@ -151,19 +152,8 @@ function clip(text: string, max = 90000) {
 // silently trusting the LLM's judgment call alone (see
 // app/api/extract/fill_value_issue.md, improvement #3).
 
-function normKey(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-function keysLikelyMatch(a: string, b: string): boolean {
-  const na = normKey(a);
-  const nb = normKey(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  if (na.length >= 3 && nb.length >= 3 && (na.includes(nb) || nb.includes(na)))
-    return true;
-  return false;
-}
+// normKey/keysLikelyMatch now live in lib/entity-values.ts, shared with the
+// client-side per-series entity resolution in Fill Values/Dataset export.
 
 type LooseFieldValue = {
   name: string;
@@ -179,7 +169,6 @@ type PaperContextShape = {
   materials?: unknown[];
   oxidants?: unknown[];
   micropollutants?: unknown[];
-  generalConditions?: unknown[];
 };
 
 // Builds (fieldNameCandidate -> sourceValue) pairs from paper_context.
@@ -204,11 +193,6 @@ function buildFallbackCandidates(
   addSingleEntityGroup(paperContext.materials);
   addSingleEntityGroup(paperContext.oxidants);
   addSingleEntityGroup(paperContext.micropollutants);
-
-  for (const v of (paperContext.generalConditions ??
-    []) as LooseFieldValue[]) {
-    if (v?.value?.trim()) out.push({ key: v.name, value: v });
-  }
   return out;
 }
 
@@ -317,11 +301,10 @@ export async function POST(req: Request) {
     }
 
     // Trích xuất MỘT LẦN cho cả bài báo (không lặp lại theo từng figure):
-    // xây dựng "paper context" gồm 4 nhóm entity —
+    // xây dựng "paper context" gồm 3 nhóm entity —
     //   - materials          (catalyst, precursor, support, ...)
     //   - oxidants           (peracetic acid, H2O2, persulfate, ...)
     //   - micropollutants    (carbamazepine, ...)
-    //   - generalConditions  (điều kiện/hằng số mặc định dùng chung cho cả bài)
     // — mỗi entity kèm toàn bộ thông số/đặc tính hoá lý của nó (materials:
     // SBET, pHpzc, 2Theta, pore volume, kích thước hạt, thành phần nguyên tố...;
     // oxidants: MW, pKa, O-O bond dissociation energy, standard reduction
@@ -329,6 +312,16 @@ export async function POST(req: Request) {
     // Kết quả này sẽ được front-end lưu lại (paperContext) và truyền sang mỗi
     // lần gọi "figure_extract" để dùng làm nguồn TRA CỨU (không phải suy luận)
     // khi field không tìm thấy trong text của riêng figure đó.
+    //
+    // Deliberately does NOT also try to extract paper-wide "general
+    // conditions" (dosages, pH, temperature not tied to one entity) here
+    // anymore — that bucket went through three rounds of real bugs (a
+    // figure's own caption getting hoisted into a paper-wide table, wrong
+    // unit conversions, entities merged into each other) because it was
+    // pure duplicated risk: figure_extract already reads the full paper
+    // text PLUS the specific figure's own caption directly (rule 4) and
+    // reliably finds these values on its own, per-figure. One correct place
+    // to get a value beats two places that can disagree.
     // --- paper_context, split into two small tasks the CLIENT orchestrates ---
     //
     // This used to be one server-side task that internally chunked the paper
@@ -420,8 +413,8 @@ export async function POST(req: Request) {
       }
     }
 
-    // Per-chunk scan: extracts materials/oxidants/micropollutants/
-    // generalConditions found in ONE chunk of the paper, using the canonical
+    // Per-chunk scan: extracts materials/oxidants/micropollutants
+    // found in ONE chunk of the paper, using the canonical
     // entity names from "paper_context_names" (if provided) so results merge
     // cleanly across chunks once the client combines them (see
     // lib/paper-context.ts's mergeEntityLists/mergeFieldValueArrays). No
@@ -531,11 +524,6 @@ export async function POST(req: Request) {
           .describe(
             "Every micropollutant / target pollutant actually named in THIS excerpt.",
           ),
-        generalConditions: z
-          .array(fieldValueSchema)
-          .describe(
-            "One entry for each field in 'Schema fields' that is a paper-wide default/fixed condition NOT tied to one specific material/oxidant/micropollutant (e.g. temperature, catalyst dosage, oxidant dosage, initial pH, reaction volume) — ONLY if THIS excerpt explicitly frames it as a general/shared condition (e.g. in Materials & Methods, or a figure caption that says 'unless otherwise noted').",
-          ),
         notes: z
           .string()
           .describe(
@@ -567,13 +555,12 @@ export async function POST(req: Request) {
             "4. For every material you list, emit one 'values' entry for each SCHEMA FIELD above that meaningfully matches a property of THAT SPECIFIC material (match by meaning, not exact string — e.g. schema field 'SBET' matches 'BET surface area'). These are the material's own measured/experimental data from THIS paper — NEVER look these up externally, NEVER invent them; if a matching schema field isn't reported in this excerpt, still emit it with value='' and provenance='not_reported'.",
             "5. For every oxidant you list, emit one 'values' entry for each SCHEMA FIELD above that meaningfully matches a universal physicochemical property of THAT SPECIFIC oxidant (e.g. MW, pKa, standard reduction potential). If this excerpt doesn't state one, you MAY fill it from reliable general chemistry knowledge with provenance='looked_up', but you MUST first pin down the EXACT chemical species involved (e.g. is 'PMS' the free HSO5- anion, or a specific commercial triple-salt formulation?) and name that species + the source/basis in 'conversionNote'. If ambiguous, prefer leaving it not_reported over guessing the wrong species.",
             "6. For every micropollutant you list, emit one 'values' entry for each SCHEMA FIELD above that meaningfully matches a universal physicochemical property of THAT SPECIFIC micropollutant (e.g. MW, LogKow). If this excerpt doesn't state one, you MAY fill it from reliable chemistry/literature knowledge with provenance='looked_up', citing the basis in 'conversionNote'. Never invent a value — if a reliable value isn't known, value='' and provenance='not_reported'.",
-            "7. For any SCHEMA FIELD that is NOT a property of one specific material/oxidant/micropollutant (i.e. a paper-wide default/shared condition), extract it into 'generalConditions' ONLY if THIS excerpt explicitly frames it as default/shared — e.g. Materials & Methods prose, or an explicit 'Conditions:' tag attached to a figure caption. These come from THIS paper only — provenance='reported', never looked_up.",
-            "8. CRITICAL — a figure caption or sentence that lists SEVERAL DIFFERENT values of the same quantity tied to different panels/runs/curves (patterns like 'at pH0 3.50 (a), 7.00 (b) and 11.00 (c)', 'in three successive runs at pH ...', 'under different pH0', 'at 25, 35 and 45 °C') means that quantity VARIES for that figure — it is NOT a fixed/shared condition, even though one of the listed values might coincidentally match a value used elsewhere in the paper. NEVER add such a quantity to 'generalConditions' (or to a material/oxidant/micropollutant's own 'values') based on that sentence — picking the first-listed value (e.g. the '(a)' one) and treating it as the paper's default is a common mistake; leave it out entirely instead. Only values that appear in an explicit, single-valued 'Conditions:' line (or equivalent 'unless otherwise noted' framing) — never a value pulled from the varying-per-panel part of the same caption — qualify for rule 7.",
-            "9. A SCHEMA FIELD that is really a per-figure OUTCOME/varying quantity (e.g. removal efficiency, rate constant, concentration remaining — something that differs from one curve/experiment to another rather than being a fixed characteristic or condition) does NOT belong here at all: leave it out of every entity's 'values' and out of 'generalConditions'. It will be extracted separately per figure later.",
-            "10. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
-            "11. If a property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
-            "12. Never invent or infer a value for this paper's OWN measured/experimental data (materials' characterization properties, generalConditions). The only category where filling in an unstated value is allowed is universal physicochemical constants (oxidant/micropollutant properties per rules 5-6), and only when clearly labeled provenance='looked_up' with its basis stated.",
-            "13. If this excerpt names no material, oxidant, or micropollutant at all, return empty arrays for those — do not force an entry.",
+            "7. CRITICAL — a figure caption or sentence that lists SEVERAL DIFFERENT values of the same quantity tied to different panels/runs/curves (patterns like 'at pH0 3.50 (a), 7.00 (b) and 11.00 (c)', 'in three successive runs at pH ...', 'under different pH0', 'at 25, 35 and 45 °C') means that quantity VARIES for that figure — it is NOT a fixed characteristic of whatever entity is nearby in the text, even though one of the listed values might coincidentally match a value used elsewhere in the paper. NEVER attribute such a swept quantity to a material/oxidant/micropollutant's own 'values' based on that sentence — picking the first-listed value (e.g. the '(a)' one) and treating it as a fixed property is a common mistake; leave it out entirely instead.",
+            "8. A SCHEMA FIELD that is really a per-figure OUTCOME/varying quantity (e.g. removal efficiency, rate constant, concentration remaining — something that differs from one curve/experiment to another rather than being a fixed characteristic) does NOT belong here at all: leave it out of every entity's 'values'. It will be extracted separately per figure later. This module also does NOT track paper-wide default conditions (dosages, pH, temperature not tied to one entity) at all — that's figure_extract's job, reading each figure's own caption/text directly; don't try to route such a field anywhere here.",
+            "9. For every value, 'source' must be a short quote or section/figure reference supporting it (e.g. 'Section 3.1, BET surface area 148.69 m2/g'), or for a looked_up value, note it's from general knowledge (e.g. 'General chemistry knowledge').",
+            "10. If a property is mentioned only qualitatively (e.g. 'high surface area') without a number, treat it as not_reported — only extract concrete values as 'reported'.",
+            "11. Never invent or infer the UNDERLYING value for this paper's OWN measured/experimental data (materials' characterization properties) — every reported number must trace to something this excerpt actually states. The only category where LOOKED-UP chemistry knowledge is allowed is universal physicochemical constants for a named oxidant/micropollutant (rules 5-6), clearly labeled provenance='looked_up' with its basis stated.",
+            "12. If this excerpt names no material, oxidant, or micropollutant at all, return empty arrays for those — do not force an entry.",
             "",
             "Respond with ONLY valid JSON matching the schema. No markdown, no code fences, no explanation.",
             "",
@@ -629,13 +616,11 @@ export async function POST(req: Request) {
         }[];
         paperText: string;
         // paperContext = kết quả trả về của task "paper_context":
-        // { materials: [...], oxidants: [...], micropollutants: [...],
-        //   generalConditions: [...], notes }
+        // { materials: [...], oxidants: [...], micropollutants: [...], notes }
         paperContext?: {
           materials?: unknown[];
           oxidants?: unknown[];
           micropollutants?: unknown[];
-          generalConditions?: unknown[];
           [key: string]: unknown;
         };
         xField?: string;
@@ -704,15 +689,16 @@ export async function POST(req: Request) {
             "7. 'source' should be a short quote or location (e.g. figure caption, section name) that supports the value.",
             "8. CRITICAL — avoid cross-figure contamination: the paper text may contain OTHER sections describing a DIFFERENT figure/panel where some field (e.g. pH, temperature, dosage, concentration, time) is swept across several values (e.g. 'pH = 4, 6, 8, 10'). That sweep belongs ONLY to that other figure, not to this one. Do not borrow one of those swept values for a fixed-variable field here — either return empty string with confidence 0, or use a fixed/default value ONLY if the text explicitly states it applies broadly (e.g. a general experimental conditions caption that lists fixed parameters for a whole figure set, such as '[TC] = 45 µM, T = 28°C unless otherwise noted').",
             "9. Never assume a field takes a value just because numbers for that field exist somewhere in the paper — verify those numbers are actually associated with THIS figure before using them.",
-            "10. FALLBACK — 'Paper context' (if provided below) is a pre-built reference table extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). It has four parts: 'materials' (catalysts/supports/precursors), 'oxidants', 'micropollutants', and 'generalConditions' (paper-wide default/shared conditions not tied to one specific entity). If a fixed-variable field is still empty after checking 'Paper text', resolve it by LOOKUP ONLY (never infer or compute a new value):",
-            "   a. Identify which entity the field belongs to: is it a property of a material/catalyst, of an oxidant, of a micropollutant, or is it a general paper-wide condition?",
+            "10. PANEL DISAMBIGUATION — this is the opposite situation from rule 8, not a restatement of it: rule 8 is about a sweep belonging to a DIFFERENT figure; this is about THIS SAME figure's OWN caption. When the Figure's 'label' identifies one specific panel (e.g. ends in a letter like 'Figure 6c', or otherwise names one panel among several — check 'Figure' JSON's 'label'), and that figure's own caption/surrounding text lists a DIFFERENT value of some field per panel (e.g. 'at pH0 3.50 (a), 7.00 (b) and 11.00 (c)', or 'Conditions for (a)/(b)/(c) were X/Y/Z'), that field IS a normal fixed variable for THIS call — use the value tagged with the matching panel letter/number, not the first-listed one and not empty. Only fields that vary WITHIN this one panel (a single curve set with multiple curves) are governed by rules 1-3; a value that's fixed for this panel but different from sibling panels a/b/c is exactly what rule 4 means by 'this figure's specific condition'.",
+            "11. FALLBACK — 'Paper context' (if provided below) is a pre-built reference table extracted once from the WHOLE paper (so it may contain properties that fall outside the 'Paper text' excerpt given here). It has three parts: 'materials' (catalysts/supports/precursors), 'oxidants', and 'micropollutants' — each entity's own measured/looked-up properties (SBET, MW, pKa, LogKow...), NOT paper-wide dosages/conditions (those aren't in 'Paper context' at all; find them directly in 'Paper text' / this figure's own caption instead, per rule 4). If a fixed-variable field is still empty after checking 'Paper text', resolve it by LOOKUP ONLY (never infer or compute a new value):",
+            "   a. Identify which entity the field belongs to: is it a property of a material/catalyst, of an oxidant, or of a micropollutant?",
             "   b. Identify WHICH specific entity of that type this figure/curve is about (e.g. which catalyst, which oxidant, which micropollutant) — only proceed if that entity is already clear from the figure/curve context; do not guess it.",
-            "   c. Look up that exact entity by name in the matching array of 'Paper context' ('materials' / 'oxidants' / 'micropollutants'), or check 'generalConditions' directly if the field is a shared condition rather than tied to one entity.",
+            "   c. Look up that exact entity by name in the matching array of 'Paper context' ('materials' / 'oxidants' / 'micropollutants').",
             "   d. Copy that entity's matching property value — match by meaning, not exact string (e.g. field 'SBET (catalyst)' matches a materials property named 'BET surface area'; field 'MW (oxidant)' matches an oxidants property named 'MW'; field 'LogKow' matches a micropollutants property of the same name).",
             "   Set 'source' to mention it came from Paper context (e.g. 'Paper context: Cu-rGO LDH (materials), BET surface area'). Do NOT use a property belonging to a DIFFERENT entity than the one this figure/curve is about, and never invent a value that isn't explicitly present in 'Paper context' or 'Paper text'. Copy the source entry's 'provenance' as-is (if it was 'looked_up' there, it stays 'looked_up' here — do not relabel it 'reported').",
-            "11. UNIT CONVERSION — each entry in 'Fields' may carry a 'unit' (the standardized unit this dataset wants). If the paper reports the same quantity in a DIFFERENT unit, you must: (a) put the paper's exact value+unit string in 'originalValue' (e.g. '0.5 g/L'), (b) compute the standardized value in the field's unit into 'value' (e.g. '4.42' for a field whose unit is 'mM'), (c) set provenance='derived', and (d) write the formula, the EXACT chemical species assumed, and the MW used into 'conversionNote' (e.g. 'PMS as HSO5-, MW 113.07 g/mol: 0.5 g/L / 113.07 g/mol x 1000 = 4.42 mM'). NEVER pick a molecular weight for a generic/commercial formulation name (e.g. 'PMS', 'Oxone') without first deciding the exact species intended — if genuinely ambiguous, still convert using the most standard interpretation but say so in 'conversionNote'. If the paper's unit already matches the field's unit, leave 'originalValue' empty and provenance='reported' (no conversion happened). NEVER silently overwrite the paper's original value without preserving it in 'originalValue'.",
-            "12. Some fields are IDENTITY fields naming which material/catalyst/oxidant/micropollutant/etc. is involved. When such a field genuinely does not apply to this figure's system (e.g. a 'Catalyst' field when this curve is an oxidant-only control with no catalyst), return value='None / Not applicable' and provenance='not_applicable' — this is different from 'could not determine', which is value='' with confidence=0 and provenance='not_reported'. Never leave an identity field as a bare empty string when the true answer is 'none used'.",
-            "13. PROVENANCE — every entry in 'values' must set 'provenance': 'reported' when the value came directly from this figure/paper text; 'derived' when computed via unit conversion (rule 11); 'not_applicable' when the concept doesn't apply (rule 12); 'not_reported' when it could not be determined; or the inherited value from rule 10 when resolved via Paper context fallback (which may itself be 'looked_up').",
+            "12. UNIT CONVERSION — each entry in 'Fields' may carry a 'unit' (the standardized unit this dataset wants). If the paper reports the same quantity in a DIFFERENT unit, you must: (a) put the paper's exact value+unit string in 'originalValue' (e.g. '0.5 g/L'), (b) compute the standardized value in the field's unit into 'value' (e.g. '4.42' for a field whose unit is 'mM'), (c) set provenance='derived', and (d) write the formula, the EXACT chemical species assumed, and the MW used into 'conversionNote' (e.g. 'PMS as HSO5-, MW 113.07 g/mol: 0.5 g/L / 113.07 g/mol x 1000 = 4.42 mM'). NEVER pick a molecular weight for a generic/commercial formulation name (e.g. 'PMS', 'Oxone') without first deciding the exact species intended — if genuinely ambiguous, still convert using the most standard interpretation but say so in 'conversionNote'. If the paper's unit already matches the field's unit, leave 'originalValue' empty and provenance='reported' (no conversion happened). NEVER silently overwrite the paper's original value without preserving it in 'originalValue'.",
+            "13. Some fields are IDENTITY fields naming which material/catalyst/oxidant/micropollutant/etc. is involved. When such a field genuinely does not apply to this figure's system (e.g. a 'Catalyst' field when this curve is an oxidant-only control with no catalyst), return value='None / Not applicable' and provenance='not_applicable' — this is different from 'could not determine', which is value='' with confidence=0 and provenance='not_reported'. Never leave an identity field as a bare empty string when the true answer is 'none used'.",
+            "14. PROVENANCE — every entry in 'values' must set 'provenance': 'reported' when the value came directly from this figure/paper text; 'derived' when computed via unit conversion (rule 12); 'not_applicable' when the concept doesn't apply (rule 13); 'not_reported' when it could not be determined; or the inherited value from rule 11 when resolved via Paper context fallback (which may itself be 'looked_up').",
             "",
 
             // IMPORTANT — prompt-caching order: OpenAI's automatic prompt caching
@@ -742,7 +728,7 @@ export async function POST(req: Request) {
             // Đặt SAU 'Figure' (không đặt sớm hơn) vì đây cũng là phần thay đổi
             // theo call/context giống 'Figure', không ảnh hưởng tới cache prefix
             // ổn định của 'Fields' + 'Paper text' phía trên.
-            "Paper context (JSON) - reference table of materials/oxidants/micropollutants/generalConditions, built once from the whole paper. Use ONLY as fallback per rule 10 (lookup only, never infer):",
+            "Paper context (JSON) - reference table of materials/oxidants/micropollutants, built once from the whole paper. Use ONLY as fallback per rule 11 (lookup only, never infer):",
             paperContext
               ? JSON.stringify(paperContext, null, 2)
               : "(none provided)",

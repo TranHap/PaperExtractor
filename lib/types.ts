@@ -92,6 +92,16 @@ export interface FigureContext {
   curveLabels: string[];
   changingVariable: string[];
   changingFieldNames?: string[]; // 👈 thêm dòng này
+  /**
+   * Maps a digitized series/curve name (Digitization.series) to the exact
+   * name of the material/oxidant/micropollutant (from PaperCharacteristics)
+   * that curve represents — e.g. "Cu/CuFe2O4" -> "Cu/CuFe2O4". Set by the
+   * user in Fill Values when a figure's curves each use a different
+   * catalyst/oxidant/pollutant, so entity-dependent fields (SBET, pHpzc,
+   * MW...) can be resolved per curve from Materials instead of asked as one
+   * figure-wide value (see lib/entity-values.ts).
+   */
+  seriesEntityMap?: Record<string, string>;
   notes: string;
 }
 
@@ -145,7 +155,6 @@ export interface PaperCharacteristicsResult {
   materials: PaperCharacteristicMaterial[];
   oxidants: PaperCharacteristicEntity[];
   micropollutants: PaperCharacteristicEntity[];
-  generalConditions: FieldValue[];
   notes: string;
 }
 

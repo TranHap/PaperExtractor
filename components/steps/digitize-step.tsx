@@ -5,6 +5,7 @@ import { Check, ImageUp, Plus } from "lucide-react";
 import { StepShell } from "@/components/step-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { FigureDigitizer } from "@/components/figure-digitizer";
 import { useWorkflow } from "@/lib/workflow-context";
 import type { FigureItem } from "@/lib/types";
@@ -137,6 +138,26 @@ export function DigitizeStep() {
       pickImage(paper.pageImages[bestPage]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paper, selectedFigure]);
+
+  // Fill Values sends the WHOLE selectedFigure object to figure_extract as
+  // "Figure (JSON)" and its prompt explicitly treats figure.caption as
+  // ground truth for that figure's specific condition — but nothing in this
+  // UI ever set caption/description/xAxis/yAxis since the old whole-paper
+  // "Figures & Variables" AI scan step (which used to populate them) was
+  // removed. Without it, figure_extract had only the bare label to work
+  // with and had to re-find + disambiguate the right panel/condition from
+  // the full paper text on every call — fragile for multi-panel figures
+  // (e.g. "Figure 6a/6b/6c" each at a different pH). Letting the user paste
+  // the actual caption here gives the model the same grounding text a human
+  // reader would use, independent of `figures` (a separate context array
+  // this component doesn't own) so selecting another figure keeps this one
+  // correctly attributed to its own id.
+  function updateSelectedFigure(patch: Partial<FigureItem>) {
+    if (!selectedFigure) return;
+    const updated = { ...selectedFigure, ...patch };
+    setFigures(figures.map((f) => (f.id === selectedFigure.id ? updated : f)));
+    setSelectedFigure(updated);
+  }
 
   function pickImage(url: string) {
     // Switching image is destructive: it wipes calibration + digitized
@@ -272,7 +293,7 @@ export function DigitizeStep() {
           </div>
         ) : (
         <>
-        <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
           <p className="text-sm font-medium text-foreground">
             {selectedFigure?.label}
           </p>
@@ -290,6 +311,16 @@ export function DigitizeStep() {
             accept="image/*"
             className="sr-only"
             onChange={onUpload}
+          />
+        </div>
+
+        <div className="mb-4">
+          <Textarea
+            value={selectedFigure?.caption ?? ""}
+            onChange={(e) => updateSelectedFigure({ caption: e.target.value })}
+            placeholder='Dán nguyên caption của figure này từ paper (vd. "Fig. 6. TC degradation ... at pH0 3.50 (a), 7.00 (b) and 11.00 (c); ... Conditions: [PS]0 = 1.5 g L-1 ..."). Tùy chọn nhưng nên có — Fill Values dùng đúng câu này để xác định giá trị cố định của figure, nhất là khi 1 figure có nhiều panel a/b/c với điều kiện khác nhau.'
+            rows={2}
+            className="text-xs"
           />
         </div>
 

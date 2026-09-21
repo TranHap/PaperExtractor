@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { ProvenanceBadge } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged } from "@/lib/merge";
+import { isEntityDependentField } from "@/lib/entity-values";
 
 export function MergeStep() {
   const {
@@ -20,6 +21,7 @@ export function MergeStep() {
     xField,
     yField,
     seriesField,
+    paperCharacteristics,
     goBack,
     goNext,
   } = useWorkflow();
@@ -97,6 +99,9 @@ export function MergeStep() {
                     : m.name === seriesField
                       ? "series-column"
                       : null;
+              const field = schema?.fields.find((f) => f.name === m.name);
+              const entityDependent =
+                !m.value?.trim() && isEntityDependentField(paperCharacteristics, m.name, field?.description);
 
               return (
                 <tr key={m.name} className="border-t border-border">
@@ -106,6 +111,10 @@ export function MergeStep() {
                   <td className="px-4 py-2">
                     {m.value?.trim() ? (
                       <span className="font-medium">{m.value}</span>
+                    ) : entityDependent ? (
+                      <span className="text-xs italic text-muted-foreground">
+                        theo từng series — xem ở Fill Values
+                      </span>
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}

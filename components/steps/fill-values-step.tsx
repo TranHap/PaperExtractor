@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ValuesEditor } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged } from "@/lib/merge";
+import { isEntityDependentField, listEntityOptions, lookupEntityFieldValue } from "@/lib/entity-values";
 import type { FieldValue, FigureContext } from "@/lib/types";
 
 // Filling in the fixed/changing field values for a figure is independent of
@@ -58,14 +59,55 @@ export function FillValuesStep() {
     () => new Set(figureContext?.changingFieldNames ?? []),
     [figureContext],
   );
+
+  // Fields whose real value differs by WHICH material/oxidant/micropollutant
+  // a curve represents (SBET, pHpzc, MW...) — already known from Materials,
+  // so they're resolved per series below instead of asked as one figure-wide
+  // value (see lib/entity-values.ts for why a single shared value is wrong
+  // here). Digitization columns are excluded — those are handled separately.
+  const entityOptions = useMemo(() => listEntityOptions(paperCharacteristics), [paperCharacteristics]);
+  const entityDependentFieldNames = useMemo(() => {
+    if (entityOptions.length === 0) return new Set<string>();
+    return new Set(
+      allFields
+        .filter(
+          (f) =>
+            !digitizationColumns.includes(f.name) &&
+            isEntityDependentField(paperCharacteristics, f.name, f.description),
+        )
+        .map((f) => f.name),
+    );
+  }, [allFields, digitizationColumns, paperCharacteristics, entityOptions]);
+  const entityDependentFields = useMemo(
+    () => allFields.filter((f) => entityDependentFieldNames.has(f.name)),
+    [allFields, entityDependentFieldNames],
+  );
+
   const changingFields = useMemo(
-    () => allFields.filter((f) => changingFieldNames.has(f.name)),
-    [allFields, changingFieldNames],
+    () => allFields.filter((f) => changingFieldNames.has(f.name) && !entityDependentFieldNames.has(f.name)),
+    [allFields, changingFieldNames, entityDependentFieldNames],
   );
   const fixedFields = useMemo(
-    () => allFields.filter((f) => !changingFieldNames.has(f.name)),
-    [allFields, changingFieldNames],
+    () => allFields.filter((f) => !changingFieldNames.has(f.name) && !entityDependentFieldNames.has(f.name)),
+    [allFields, changingFieldNames, entityDependentFieldNames],
   );
+
+  const seriesList = digitizationByFigure[currentFigureId ?? ""]?.series ?? [];
+  const seriesEntityMap = figureContext?.seriesEntityMap ?? {};
+
+  function setSeriesEntity(seriesName: string, entityName: string) {
+    const nextMap = { ...seriesEntityMap };
+    if (entityName) nextMap[seriesName] = entityName;
+    else delete nextMap[seriesName];
+    persistFigureContext({
+      values: figureContext?.values ?? [],
+      curveLabels: figureContext?.curveLabels ?? [],
+      changingVariable: figureContext?.changingVariable ?? [],
+      changingFieldNames: figureContext?.changingFieldNames ?? [],
+      seriesEntityMap: nextMap,
+      notes: figureContext?.notes ?? "",
+    });
+  }
   const mergedValues = useMemo(
     () => buildMerged(schema, [], figureContext?.values ?? []),
     [schema, figureContext],
@@ -114,13 +156,18 @@ export function FillValuesStep() {
         body: JSON.stringify({
           task: "figure_extract",
           figure: selectedFigure,
-          fields: allFields.map((f) => ({
-            name: f.name,
-            type: f.type,
-            description: f.description,
-            unit: f.unit,
-            options: f.options,
-          })),
+          // Entity-dependent fields (SBET, pHpzc...) are resolved per series
+          // from Materials (see the seriesEntityMap table below) — never
+          // asked from the model as a single figure-wide value here.
+          fields: allFields
+            .filter((f) => !entityDependentFieldNames.has(f.name))
+            .map((f) => ({
+              name: f.name,
+              type: f.type,
+              description: f.description,
+              unit: f.unit,
+              options: f.options,
+            })),
           xField: xField || undefined,
           yField: yField || undefined,
           seriesField: seriesField || undefined,
@@ -239,6 +286,85 @@ export function FillValuesStep() {
                 </span>
               );
             })}
+          </div>
+        )}
+
+        {entityDependentFields.length > 0 && (
+          <div className="mb-6 rounded-lg border border-border p-4">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium">Theo từng catalyst/chất (series)</h3>
+              <span className="text-xs text-muted-foreground">
+                {entityDependentFields.length} field lấy từ Materials
+              </span>
+            </div>
+            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+              {entityDependentFields.map((f) => f.name).join(", ")} là đặc tính riêng của
+              từng vật liệu/oxidant/chất ô nhiễm (đã có sẵn ở bước Materials) — không phải
+              1 giá trị chung cho cả figure. Gán mỗi series với đúng chất tương ứng để lấy
+              giá trị đúng cho từng đường; sai ở đây thì sửa lại ở Materials, không sửa tay
+              ở đây.
+            </p>
+            {seriesList.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Chưa có series nào — đặt tên series ở bước Digitize trước.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-left text-muted-foreground">
+                    <tr>
+                      <th className="py-1.5 pr-3 font-medium">Series</th>
+                      <th className="py-1.5 pr-3 font-medium">Là chất nào?</th>
+                      {entityDependentFields.map((f) => (
+                        <th key={f.name} className="py-1.5 pr-3 font-mono font-medium">
+                          {f.name}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {seriesList.map((s) => {
+                      const mapped = seriesEntityMap[s] ?? "";
+                      return (
+                        <tr key={s} className="border-t border-border">
+                          <td className="py-1.5 pr-3 font-mono">{s}</td>
+                          <td className="py-1.5 pr-3">
+                            <select
+                              value={mapped}
+                              onChange={(e) => setSeriesEntity(s, e.target.value)}
+                              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                            >
+                              <option value="">— chưa gán —</option>
+                              {entityOptions.map((opt) => (
+                                <option key={`${opt.category}-${opt.name}`} value={opt.name}>
+                                  {opt.name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          {entityDependentFields.map((f) => {
+                            const resolved = mapped
+                              ? lookupEntityFieldValue(paperCharacteristics, mapped, f.name, f.description)
+                              : undefined;
+                            return (
+                              <td key={f.name} className="py-1.5 pr-3">
+                                {resolved?.value ? (
+                                  <span className="font-mono font-medium">{resolved.value}</span>
+                                ) : (
+                                  <span className="text-muted-foreground">
+                                    {mapped ? "không có ở Materials" : "—"}
+                                  </span>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 

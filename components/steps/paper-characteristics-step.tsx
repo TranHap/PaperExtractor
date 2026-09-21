@@ -497,18 +497,6 @@ export function PaperCharacteristicsStep() {
     setPaperCharacteristics({ ...paperCharacteristics, [category]: list });
   }
 
-  function updateGeneralCondition(valueIndex: number, newValue: string) {
-    if (!paperCharacteristics) return;
-    setPaperCharacteristics({
-      ...paperCharacteristics,
-      generalConditions: withEditedValue(
-        paperCharacteristics.generalConditions,
-        valueIndex,
-        newValue,
-      ),
-    });
-  }
-
   return (
     <StepShell
       stepId="paper-characteristics"
@@ -521,12 +509,11 @@ export function PaperCharacteristicsStep() {
     >
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         {paperCharacteristics ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-3 gap-3">
             {[
               { label: "Vật liệu", value: paperCharacteristics.materials.length },
               { label: "Chất oxy hóa", value: paperCharacteristics.oxidants.length },
               { label: "Chất ô nhiễm", value: paperCharacteristics.micropollutants.length },
-              { label: "Điều kiện chung", value: paperCharacteristics.generalConditions.length },
             ].map((s) => (
               <div key={s.label} className="rounded-xl border border-border px-4 py-3">
                 <p className="font-mono text-2xl font-semibold tabular-nums leading-none">{s.value}</p>
@@ -617,47 +604,6 @@ export function PaperCharacteristicsStep() {
               pka: (ei, c) => applyEntityValues("micropollutants", ei, (values) => upsertPubchemPka(values, c)),
             }}
           />
-
-          {paperCharacteristics.generalConditions.length > 0 && (
-            <div>
-              <p className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Điều kiện chung
-                <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10.5px] normal-case tracking-normal text-foreground">
-                  {paperCharacteristics.generalConditions.length}
-                </span>
-              </p>
-              <div className="rounded-xl border border-border p-5">
-                <table className="w-full text-[13px]">
-                  <thead>
-                    <tr className="text-left">
-                      <th className="pb-1.5 pr-2 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Property</th>
-                      <th className="pb-1.5 pr-2 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Value</th>
-                      <th className="pb-1.5 text-[10.5px] font-medium uppercase tracking-wide text-muted-foreground/80">Source</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paperCharacteristics.generalConditions.map((v, i) => (
-                      <tr key={i} className="border-t border-border">
-                        <td className="py-2 pr-2 font-mono text-muted-foreground">{v.name}</td>
-                        <td className="py-2 pr-2">
-                          <EditableValueCell
-                            value={v}
-                            onChange={(newValue) => updateGeneralCondition(i, newValue)}
-                          />
-                        </td>
-                        <td className="py-2 text-muted-foreground">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <ProvenanceBadge provenance={v.provenance} />
-                            {v.source && <span className="text-[11.5px]">{v.source}</span>}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
 
           {paperCharacteristics.notes && (
             <p className="flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">

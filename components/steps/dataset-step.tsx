@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { ScatterPreview } from "@/components/scatter-preview";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged, toCsv } from "@/lib/merge";
+import { isEntityDependentField, lookupEntityFieldValue } from "@/lib/entity-values";
 import type { Dataset, FieldValue, FigureItem } from "@/lib/types";
 
 function slug(text: string): string {
@@ -54,6 +55,7 @@ export function DatasetStep() {
     selectedFigure,
     digitizationByFigure,
     figureContextByFigure,
+    paperCharacteristics,
     xField,
     yField,
     seriesField,
@@ -148,6 +150,12 @@ export function DatasetStep() {
 
     const headers = ["Source", ...columns];
     const metaByName = new Map(rawMerged.map((m) => [m.name, m]));
+    // Series -> entity name (e.g. "Cu/CuFe2O4"), set in Fill Values when this
+    // figure's curves each use a different catalyst/oxidant/pollutant — lets
+    // entity-dependent fields (SBET, pHpzc...) resolve to the RIGHT curve's
+    // own value instead of one shared value for every row (see
+    // lib/entity-values.ts).
+    const seriesEntityMap = figureContextByFigure[figure.id]?.seriesEntityMap ?? {};
     const source = citationLabel.trim()
       ? `[${citationLabel.trim()}] ${figure.label}`
       : `${paperLabel} (${figure.label})`;
@@ -157,6 +165,16 @@ export function DatasetStep() {
         if (name === xField) return p.x;
         if (name === yField) return p.y;
         if (name === seriesField) return p.series;
+
+        const entityName = seriesEntityMap[p.series];
+        if (entityName) {
+          const field = schema?.fields.find((f) => f.name === name);
+          if (isEntityDependentField(paperCharacteristics, name, field?.description)) {
+            const resolved = lookupEntityFieldValue(paperCharacteristics, entityName, name, field?.description);
+            if (resolved?.value) return resolved.value;
+          }
+        }
+
         const m = metaByName.get(name);
         if (!m) return "";
         if (m.series) return m.series === p.series ? m.value : "";

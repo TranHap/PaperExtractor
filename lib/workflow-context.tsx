@@ -17,7 +17,6 @@ import {
   clip,
   mapWithConcurrency,
   mergeEntityLists,
-  mergeFieldValueArrays,
   PAPER_CONTEXT_CHUNK_OVERLAP,
   PAPER_CONTEXT_CHUNK_SIZE,
   PAPER_CONTEXT_MAX_CONCURRENT_CHUNKS,
@@ -25,7 +24,6 @@ import {
   type EntityNames,
   type PaperContextChunkResult,
 } from "@/lib/paper-context";
-import type { FieldValue } from "@/lib/types";
 
 export interface ParsedPaper {
   fileName: string;
@@ -322,7 +320,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
                 materials: data.materials ?? [],
                 oxidants: data.oxidants ?? [],
                 micropollutants: data.micropollutants ?? [],
-                generalConditions: data.generalConditions ?? [],
                 notes: data.notes ?? "",
               };
             } catch (e) {
@@ -332,7 +329,6 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
                 materials: [],
                 oxidants: [],
                 micropollutants: [],
-                generalConditions: [],
                 notes: "",
               };
             } finally {
@@ -345,17 +341,13 @@ export function WorkflowProvider({ children }: { children: React.ReactNode }) {
         const materials = mergeEntityLists(chunkResults.flatMap((r) => r.materials ?? []));
         const oxidants = mergeEntityLists(chunkResults.flatMap((r) => r.oxidants ?? []));
         const micropollutants = mergeEntityLists(chunkResults.flatMap((r) => r.micropollutants ?? []));
-        const generalConditions = chunkResults.reduce(
-          (acc, r) => mergeFieldValueArrays(acc, r.generalConditions ?? []),
-          [] as FieldValue[],
-        );
         const notes = chunkResults
           .map((r) => r.notes?.trim())
           .filter((n): n is string => Boolean(n))
           .join(" ");
 
         if (myGeneration !== paperCharacteristicsGeneration.current) return; // stale — paper changed mid-scan
-        setPaperCharacteristics({ materials, oxidants, micropollutants, generalConditions, notes });
+        setPaperCharacteristics({ materials, oxidants, micropollutants, notes });
         setPaperCharacteristicsStatus("done");
         if (chunkFailures > 0) {
           setPaperCharacteristicsWarning(
