@@ -7,7 +7,12 @@ import { Button } from "@/components/ui/button";
 import { ValuesEditor } from "@/components/values-editor";
 import { useWorkflow } from "@/lib/workflow-context";
 import { buildMerged } from "@/lib/merge";
-import { isEntityDependentField, listEntityOptions, lookupEntityFieldValue } from "@/lib/entity-values";
+import {
+  isEntityDependentField,
+  listEntityOptions,
+  lookupEntityFieldValue,
+  seriesListMatchesAnyEntity,
+} from "@/lib/entity-values";
 import type { FieldValue, FigureContext } from "@/lib/types";
 
 // Filling in the fixed/changing field values for a figure is independent of
@@ -95,10 +100,18 @@ export function FillValuesStep() {
   const seriesList = digitizationByFigure[currentFigureId ?? ""]?.series ?? [];
   const seriesEntityMap = figureContext?.seriesEntityMap ?? {};
 
-  function setSeriesEntity(seriesName: string, entityName: string) {
-    const nextMap = { ...seriesEntityMap };
-    if (entityName) nextMap[seriesName] = entityName;
-    else delete nextMap[seriesName];
+  // Only when each series/curve actually IS a different catalyst/oxidant/
+  // micropollutant (series named after a known entity) does per-series
+  // mapping make sense. When the series is something else instead — pH,
+  // water matrix, dosage — every curve in the figure shares the SAME single
+  // substance, so asking the user to map each one individually is pointless
+  // busywork; see lib/entity-values.ts's seriesListMatchesAnyEntity.
+  const seriesIsEntityIdentity = useMemo(
+    () => seriesListMatchesAnyEntity(seriesList, paperCharacteristics),
+    [seriesList, paperCharacteristics],
+  );
+
+  function persistSeriesEntityMap(nextMap: Record<string, string>) {
     persistFigureContext({
       values: figureContext?.values ?? [],
       curveLabels: figureContext?.curveLabels ?? [],
@@ -108,6 +121,26 @@ export function FillValuesStep() {
       notes: figureContext?.notes ?? "",
     });
   }
+
+  function setSeriesEntity(seriesName: string, entityName: string) {
+    const nextMap = { ...seriesEntityMap };
+    if (entityName) nextMap[seriesName] = entityName;
+    else delete nextMap[seriesName];
+    persistSeriesEntityMap(nextMap);
+  }
+
+  // Series isn't the entity dimension (pH/water/dosage curves, one shared
+  // substance) — one figure-wide choice, fanned out to every series so the
+  // EXISTING per-series lookup (dataset-step's CSV join, the preview below)
+  // keeps working unchanged regardless of which case this is.
+  function setWholeFigureEntity(entityName: string) {
+    const nextMap: Record<string, string> = {};
+    if (entityName) for (const s of seriesList) nextMap[s] = entityName;
+    persistSeriesEntityMap(nextMap);
+  }
+
+  const wholeFigureEntity = seriesList.length > 0 ? seriesEntityMap[seriesList[0]] ?? "" : "";
+
   const mergedValues = useMemo(
     () => buildMerged(schema, [], figureContext?.values ?? []),
     [schema, figureContext],
@@ -289,7 +322,7 @@ export function FillValuesStep() {
           </div>
         )}
 
-        {entityDependentFields.length > 0 && (
+        {entityDependentFields.length > 0 && seriesIsEntityIdentity && (
           <div className="mb-6 rounded-lg border border-border p-4">
             <div className="mb-1 flex items-center justify-between gap-2">
               <h3 className="text-sm font-medium">Theo từng catalyst/chất (series)</h3>
@@ -363,6 +396,52 @@ export function FillValuesStep() {
                     })}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {entityDependentFields.length > 0 && !seriesIsEntityIdentity && (
+          <div className="mb-6 rounded-lg border border-border p-4">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium">Chất dùng trong figure này</h3>
+              <span className="text-xs text-muted-foreground">
+                {entityDependentFields.length} field lấy từ Materials
+              </span>
+            </div>
+            <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+              Series ở figure này là {seriesField || "biến"} thay đổi (không phải tên chất) —
+              nghĩa là cả figure chỉ dùng CHUNG 1 chất, nên {entityDependentFields.map((f) => f.name).join(", ")}{" "}
+              chỉ cần chọn 1 lần cho cả figure, không cần gán theo từng series.
+            </p>
+            {seriesList.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Chưa có series nào — đặt tên series ở bước Digitize trước.
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3 text-xs">
+                <select
+                  value={wholeFigureEntity}
+                  onChange={(e) => setWholeFigureEntity(e.target.value)}
+                  className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                >
+                  <option value="">— chưa chọn —</option>
+                  {entityOptions.map((opt) => (
+                    <option key={`${opt.category}-${opt.name}`} value={opt.name}>
+                      {opt.name}
+                    </option>
+                  ))}
+                </select>
+                {entityDependentFields.map((f) => {
+                  const resolved = wholeFigureEntity
+                    ? lookupEntityFieldValue(paperCharacteristics, wholeFigureEntity, f.name, f.description)
+                    : undefined;
+                  return (
+                    <span key={f.name} className="font-mono">
+                      {f.name}={resolved?.value || "—"}
+                    </span>
+                  );
+                })}
               </div>
             )}
           </div>

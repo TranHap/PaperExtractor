@@ -34,6 +34,26 @@ export function listEntityOptions(pc: PaperCharacteristicsResult | null | undefi
   ];
 }
 
+/**
+ * Whether a figure's series/curve dimension is itself the entity identity
+ * (e.g. one curve per catalyst — "Cu/CuFe2O4", "CuFe2O4") as opposed to some
+ * other condition (pH, water matrix, dosage...) swept across curves that all
+ * share the SAME single catalyst/oxidant/micropollutant. Only in the former
+ * case does it make sense to ask the user to map EACH series to an entity —
+ * mapping "pH 3.5" / "Tap water" to "which catalyst?" one row at a time is
+ * nonsensical busywork when every curve in the figure is the same substance.
+ * Matches by name against known entities from Materials; a figure with no
+ * series named after any known entity is assumed to be the latter case.
+ */
+export function seriesListMatchesAnyEntity(
+  seriesList: string[],
+  pc: PaperCharacteristicsResult | null | undefined,
+): boolean {
+  const options = listEntityOptions(pc);
+  if (options.length === 0) return false;
+  return seriesList.some((s) => options.some((opt) => keysLikelyMatch(opt.name, s)));
+}
+
 const ENTITY_CATEGORIES: EntityCategory[] = ["materials", "oxidants", "micropollutants"];
 
 /**
