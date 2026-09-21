@@ -21,6 +21,7 @@ import type {
 } from "@/lib/types";
 import type { LserdRow } from "@/app/api/lserd/route";
 import { searchPubchem, type PubchemBasic, type PubchemPkaCandidate } from "@/lib/pubchem";
+import { stripParenthetical } from "@/lib/chem-name";
 
 // Shared by every external-lookup "apply" handler below (LSERD, PubChem):
 // replaces the field by name if it already exists, otherwise appends it —
@@ -103,10 +104,14 @@ function LserdLookup({ entityName, onApply }: { entityName: string; onApply: (ro
     setLoading(true);
     setError(null);
     try {
+      // Entity names often carry the paper's "Full name (ABBR)" convention
+      // (e.g. "Triclosan (TCS)") — LSERD's search still returns a hit for
+      // that combined string, but far fewer/less relevant matches than
+      // searching the bare name, so strip it here just like PubChem does.
       const res = await fetch("/api/lserd", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: entityName }),
+        body: JSON.stringify({ query: stripParenthetical(entityName) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Tra cứu thất bại");

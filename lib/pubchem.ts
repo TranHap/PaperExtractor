@@ -1,5 +1,7 @@
 "use client";
 
+import { stripParenthetical } from "@/lib/chem-name";
+
 // PubChem PUG REST/PUG View — free, public, and (verified) sends
 // Access-Control-Allow-Origin: * on both endpoints used below, so this can
 // be called directly from the browser with no server proxy (unlike the UFZ
@@ -50,13 +52,11 @@ function normalizeQuery(name: string): string {
 function candidateQueries(query: string): string[] {
   const normalized = normalizeQuery(query);
   const candidates = [normalized];
-  const parenMatch = normalized.match(/^(.*?)\s*\(([^)]+)\)\s*(.*)$/);
-  if (parenMatch) {
-    const outside = `${parenMatch[1]} ${parenMatch[3]}`.trim();
-    if (outside && !candidates.includes(outside)) candidates.push(outside);
-    const inside = parenMatch[2].trim();
-    if (inside && !candidates.includes(inside)) candidates.push(inside);
-  }
+  const outside = stripParenthetical(normalized);
+  if (outside !== normalized && !candidates.includes(outside)) candidates.push(outside);
+  const insideMatch = normalized.match(/\(([^)]+)\)/);
+  const inside = insideMatch?.[1]?.trim();
+  if (inside && !candidates.includes(inside)) candidates.push(inside);
   return candidates;
 }
 
